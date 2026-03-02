@@ -24,7 +24,7 @@
     "num_workers": 2,
     "lr": 0.0005,
     "weight_decay": 0.00001,
-    "max_epochs_pretrain": 1,
+    "max_epochs_pretrain": 0,
     "max_epochs_warmup": 1,
     "max_epochs_gan": 1,
     "patience_pretrain": 5,
