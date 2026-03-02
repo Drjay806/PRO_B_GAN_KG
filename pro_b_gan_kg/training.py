@@ -124,7 +124,7 @@ def _initialize_from_semantic_files(
 ) -> int:
     total_initialized = 0
     embedding_dim = entity_weight.shape[1]
-    semantic_files = sorted(embeddings_dir.glob("*_embeddings.pt"))
+    semantic_files = sorted(embeddings_dir.glob("*_embeddings*.pt"))
 
     if not semantic_files:
         logger.warning(f"No semantic embedding files found in {embeddings_dir}")
