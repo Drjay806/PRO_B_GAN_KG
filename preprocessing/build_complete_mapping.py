@@ -7,19 +7,31 @@ import argparse
 import json
 import pandas as pd
 from pathlib import Path
-from collections import OrderedDict
 
 
-def load_tsv_ids(tsv_path: Path, id_column: str = 'entity_id') -> list:
-    """Load entity IDs from TSV file in order."""
+def _detect_id_column(df: pd.DataFrame) -> str | None:
+    preferred = ["entity_id", "id", "uniprot_id", "go_id", "pathway_id", "disease_id"]
+    for col in preferred:
+        if col in df.columns:
+            return col
+    for col in df.columns:
+        lower = col.lower()
+        if lower.endswith("_id") or lower == "id":
+            return col
+    return None
+
+
+def load_tsv_ids(tsv_path: Path) -> list:
+    """Load entity IDs from TSV file in row order."""
     try:
         df = pd.read_csv(tsv_path, sep='\t', encoding='utf-8')
-        if id_column in df.columns:
-            ids = df[id_column].tolist()
+        id_column = _detect_id_column(df)
+        if id_column:
+            ids = [str(x) for x in df[id_column].tolist() if pd.notna(x)]
             print(f"  ✓ Loaded {len(ids)} IDs from {tsv_path.name}")
             return ids
         else:
-            print(f"  ⚠️  No '{id_column}' column in {tsv_path.name}")
+            print(f"  ⚠️  Could not detect ID column in {tsv_path.name}")
             print(f"     Available columns: {list(df.columns)}")
             return []
     except Exception as e:
@@ -34,19 +46,17 @@ def build_complete_mapping(metadata_dir: Path, output_path: Path):
     print(f"From: {metadata_dir}")
     print(f"{'='*70}\n")
     
-    # Map TSV filenames to node types
+    # Map actual ProHGT TSV filenames to node types
     tsv_to_node_type = {
-        'protein_metadata.tsv': 'Protein',
-        'compound_metadata.tsv': 'Compound',
-        'drug_metadata.tsv': 'Drug',
-        'disease_metadata.tsv': 'Disease',
-        'go_metadata.tsv': ['GO_term_F', 'GO_term_P', 'GO_term_C'],  # GO terms split by aspect
-        'pathway_metadata.tsv': 'Pathway',
-        'kegg_pathway_metadata.tsv': 'kegg_Pathway',
-        'side_effect_metadata.tsv': 'Side_effect',
-        'domain_metadata.tsv': 'Domain',
-        'ec_number_metadata.tsv': 'EC_number',
-        'hpo_metadata.tsv': 'HPO',
+        'proteins.tsv': 'Protein',
+        'compounds.tsv': 'Compound',
+        'drugs.tsv': 'Drug',
+        'diseases.tsv': 'Disease',
+        'go_terms.tsv': ['GO_term_F', 'GO_term_P', 'GO_term_C'],
+        'pathways.tsv': ['Pathway', 'kegg_Pathway'],
+        'side_effects.tsv': 'HPO',
+        'domains.tsv': 'Domain',
+        'ec_numbers.tsv': 'EC_number',
     }
     
     complete_mapping = {}
@@ -60,18 +70,70 @@ def build_complete_mapping(metadata_dir: Path, output_path: Path):
         
         print(f"Processing {tsv_file}...")
         
-        # Special handling for GO terms (split by aspect)
-        if isinstance(node_type, list):
+        # Special handling for GO terms split by aspect F/P/C
+        if tsv_file == 'go_terms.tsv':
             df = pd.read_csv(tsv_path, sep='\t', encoding='utf-8')
-            if 'entity_id' in df.columns and 'aspect' in df.columns:
-                for aspect_type in node_type:
-                    aspect_char = aspect_type.split('_')[-1]  # F, P, or C
-                    aspect_df = df[df['aspect'] == aspect_char]
-                    ids = aspect_df['entity_id'].tolist()
+            id_col = _detect_id_column(df)
+            aspect_col = 'aspect' if 'aspect' in df.columns else None
+            if id_col and aspect_col:
+                for aspect_type in ['GO_term_F', 'GO_term_P', 'GO_term_C']:
+                    aspect_char = aspect_type.split('_')[-1]
+                    aspect_df = df[df[aspect_col].astype(str).str.upper() == aspect_char]
+                    ids = [str(x) for x in aspect_df[id_col].tolist() if pd.notna(x)]
                     complete_mapping[aspect_type] = ids
                     print(f"  ✓ {aspect_type}: {len(ids)} IDs")
             else:
-                print(f"  ⚠️  Could not split GO terms by aspect")
+                print(f"  ⚠️  Could not split GO terms by aspect in {tsv_file}")
+                print(f"     Available columns: {list(df.columns)}")
+
+        # Special handling for Pathway vs kegg_Pathway split
+        elif tsv_file == 'pathways.tsv':
+            df = pd.read_csv(tsv_path, sep='\t', encoding='utf-8')
+            id_col = _detect_id_column(df)
+            if not id_col:
+                print(f"  ⚠️  Could not detect ID column for pathways.tsv")
+                continue
+
+            source_col = None
+            for candidate in ['source', 'database', 'db', 'pathway_source', 'type']:
+                if candidate in df.columns:
+                    source_col = candidate
+                    break
+
+            if source_col:
+                source_series = df[source_col].astype(str).str.lower()
+                kegg_df = df[source_series.str.contains('kegg', na=False)]
+                non_kegg_df = df[~source_series.str.contains('kegg', na=False)]
+            else:
+                id_series = df[id_col].astype(str)
+                kegg_mask = id_series.str.contains('kegg|map\d+|hsa\d+', case=False, regex=True)
+                kegg_df = df[kegg_mask]
+                non_kegg_df = df[~kegg_mask]
+
+            complete_mapping['Pathway'] = [str(x) for x in non_kegg_df[id_col].tolist() if pd.notna(x)]
+            complete_mapping['kegg_Pathway'] = [str(x) for x in kegg_df[id_col].tolist() if pd.notna(x)]
+            print(f"  ✓ Pathway: {len(complete_mapping['Pathway'])} IDs")
+            print(f"  ✓ kegg_Pathway: {len(complete_mapping['kegg_Pathway'])} IDs")
+
+        # Special handling for HPO (if file uses HP:* terms)
+        elif tsv_file == 'side_effects.tsv':
+            ids = load_tsv_ids(tsv_path)
+            if ids:
+                hpo_like = [entity_id for entity_id in ids if str(entity_id).startswith('HP:')]
+                if hpo_like:
+                    complete_mapping['HPO'] = hpo_like
+                    print(f"  ✓ HPO: {len(hpo_like)} IDs (from side_effects.tsv)")
+                else:
+                    complete_mapping['HPO'] = ids
+                    print(f"  ✓ HPO: {len(ids)} IDs (fallback from side_effects.tsv)")
+
+        elif isinstance(node_type, list):
+            # Any future list-based split files not explicitly handled
+            ids = load_tsv_ids(tsv_path)
+            if ids:
+                complete_mapping[node_type[0]] = ids
+                print(f"  ✓ {node_type[0]}: {len(ids)} IDs (unsplit fallback)")
+
         else:
             ids = load_tsv_ids(tsv_path)
             if ids:
