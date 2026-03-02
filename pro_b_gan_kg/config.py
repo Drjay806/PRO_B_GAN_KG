@@ -47,7 +47,9 @@ class TrainingConfig:
     leave_one_out: bool = True
     eval_topk: int = 1000
     max_steps_per_epoch: int = -1  # -1 = no limit; set >0 to cap batches for test runs
-    compgcn_edge_sample_ratio: float = 1.0  # fraction of edges fed to CompGCN each epoch; 1.0 = all edges
+    compgcn_edge_sample_ratio: float = 1.0  # fraction of edges passed to CompGCN each epoch; 1.0 = all edges
+    encoder_refresh_interval: int = 5  # update CompGCN weights every N epochs; 0 = frozen
+    encoder_refresh_sample_ratio: float = 0.20  # fraction of edges used during the encoder gradient update
 
 
 @dataclass

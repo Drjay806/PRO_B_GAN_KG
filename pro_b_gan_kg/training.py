@@ -304,13 +304,19 @@ def run_training(config: Dict, output_dir: Path) -> None:
     all_params = (
         list(entity_emb.parameters())
         + list(relation_emb.parameters())
-        + list(encoder.parameters())
         + list(fusion.parameters())
         + list(attention.parameters())
         + list(generator.parameters())
         + list(discriminator.parameters())
     )
+    # Encoder has its own optimizer — updated only during periodic refresh passes,
+    # not per-batch (its output is cached/detached so main optimizer grads never reach it)
     optimizer = torch.optim.Adam(all_params, lr=run_cfg.training.lr, weight_decay=run_cfg.training.weight_decay)
+    encoder_optimizer = torch.optim.Adam(
+        list(encoder.parameters()),
+        lr=run_cfg.training.lr,
+        weight_decay=run_cfg.training.weight_decay,
+    )
 
     neighbor_cache = build_neighbor_cache(id_triples.train)
     logger.info(f"Neighbor cache built: {len(neighbor_cache.pairs)} (h, r) pairs")
@@ -392,11 +398,81 @@ def run_training(config: Dict, output_dir: Path) -> None:
     loader = DataLoader(dataset, batch_size=run_cfg.training.batch_size, shuffle=True)
 
     logger.info(f"Starting warmup phase ({run_cfg.training.max_epochs_warmup} epochs)...")
-    # Use mixed precision (FP16) to reduce memory usage
     scaler = torch.cuda.amp.GradScaler()
     max_steps = run_cfg.training.max_steps_per_epoch
-    
+
+    def _refresh_encoder(epoch: int) -> torch.Tensor:
+        """Compute and cache CompGCN structural embeddings for one epoch.
+
+        On epochs divisible by encoder_refresh_interval: run CompGCN in train mode
+        on a sampled edge subset, compute a link-prediction loss, update encoder weights
+        via encoder_optimizer, then recompute the full cache for the batch loop.
+
+        All other epochs: eval/no_grad pass on the full (sampled-at-setup) edge set.
+        Returns a detached tensor of shape [num_entities, embedding_dim].
+        """
+        interval = run_cfg.training.encoder_refresh_interval
+        is_refresh = (interval > 0) and (epoch % interval == 0)
+
+        if is_refresh:
+            n = edge_index.shape[1]
+            k = max(int(n * run_cfg.training.encoder_refresh_sample_ratio), 10000)
+            perm = torch.randperm(n, device=device)[:k]
+            ei_s = edge_index[:, perm]
+            et_s = edge_type[perm]
+
+            encoder.train()
+            encoder_optimizer.zero_grad(set_to_none=True)
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
+                e_sem = entity_emb.embedding.weight.detach()
+                r_w = relation_emb.embedding.weight.detach()
+                if run_cfg.model.use_rgcn:
+                    e_struct = encoder(e_sem, ei_s, et_s)
+                else:
+                    e_struct = encoder(e_sem, r_w, ei_s, et_s)
+                e_final = fusion(e_sem, e_struct)
+                # Link-prediction margin loss on a fresh mini-batch of triples
+                ref_batch = next(iter(DataLoader(dataset, batch_size=min(2048, len(dataset)), shuffle=True)))
+                ref_h, ref_r, ref_t = [x.to(device) for x in ref_batch]
+                ref_neg = sampler.sample(
+                    list(zip(
+                        ref_h.cpu().numpy().astype(int),
+                        ref_r.cpu().numpy().astype(int),
+                        ref_t.cpu().numpy().astype(int),
+                    )),
+                    num_negatives=5,
+                ).to(device)
+                pos = torch.sum(e_final[ref_h] * e_final[ref_t], dim=-1)
+                neg = torch.sum(e_final[ref_h].unsqueeze(1) * e_final[ref_neg], dim=-1).mean(dim=1)
+                enc_loss = torch.relu(1.0 - pos + neg).mean()
+            scaler.scale(enc_loss).backward()
+            scaler.unscale_(encoder_optimizer)
+            torch.nn.utils.clip_grad_norm_(list(encoder.parameters()), run_cfg.training.grad_clip)
+            scaler.step(encoder_optimizer)
+            scaler.update()
+            logger.info(
+                "Epoch %d: encoder refresh (train mode, %.0f%% edges, enc_loss=%.4f)",
+                epoch + 1, run_cfg.training.encoder_refresh_sample_ratio * 100, enc_loss.item(),
+            )
+
+        # Always rebuild the full epoch cache (eval/no_grad) after possible weight update
+        encoder.eval()
+        with torch.no_grad():
+            e_sem_full = entity_emb.embedding.weight.detach()
+            r_w_full = relation_emb.embedding.weight.detach()
+            if run_cfg.model.use_rgcn:
+                cached = encoder(e_sem_full, edge_index, edge_type).detach()
+            else:
+                cached = encoder(e_sem_full, r_w_full, edge_index, edge_type).detach()
+        encoder.train()
+        if not is_refresh:
+            logger.info("Epoch %d: encoder cache rebuilt (eval mode, no grad)", epoch + 1)
+        return cached
+
     for epoch in range(run_cfg.training.max_epochs_warmup):
+        entity_struct_cached = _refresh_encoder(epoch)
+        logger.info("Warmup epoch %d: GNN pass complete, starting batch loop", epoch + 1)
+
         losses = []
         for step, batch in enumerate(loader):
             if max_steps > 0 and step >= max_steps:
@@ -412,11 +488,7 @@ def run_training(config: Dict, output_dir: Path) -> None:
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type='cuda', dtype=torch.float16):
                 entity_sem = entity_emb.embedding.weight
-                if run_cfg.model.use_rgcn:
-                    entity_struct = encoder(entity_sem, edge_index, edge_type)
-                else:
-                    entity_struct = encoder(entity_sem, relation_emb.embedding.weight, edge_index, edge_type)
-                entity_final = fusion(entity_sem, entity_struct)
+                entity_final = fusion(entity_sem, entity_struct_cached)
 
                 context, _ = build_context(
                     attention=attention,
@@ -464,6 +536,9 @@ def run_training(config: Dict, output_dir: Path) -> None:
 
     logger.info("Starting adversarial training")
     for epoch in range(run_cfg.training.max_epochs_gan):
+        entity_struct_cached = _refresh_encoder(epoch)
+        logger.info("GAN epoch %d: GNN pass complete, starting batch loop", epoch + 1)
+
         losses = []
         for step, batch in enumerate(loader):
             if max_steps > 0 and step >= max_steps:
@@ -481,11 +556,7 @@ def run_training(config: Dict, output_dir: Path) -> None:
                 optimizer.zero_grad(set_to_none=True)
                 with torch.autocast(device_type='cuda', dtype=torch.float16):
                     entity_sem = entity_emb.embedding.weight
-                    if run_cfg.model.use_rgcn:
-                        entity_struct = encoder(entity_sem, edge_index, edge_type)
-                    else:
-                        entity_struct = encoder(entity_sem, relation_emb.embedding.weight, edge_index, edge_type)
-                    entity_final = fusion(entity_sem, entity_struct)
+                    entity_final = fusion(entity_sem, entity_struct_cached)
                     context, _ = build_context(
                         attention=attention, h=h, r_id=r, r_emb=relation_emb(r),
                         neighbor_cache=neighbor_cache, entity_emb=entity_final,
@@ -510,11 +581,7 @@ def run_training(config: Dict, output_dir: Path) -> None:
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type='cuda', dtype=torch.float16):
                 entity_sem = entity_emb.embedding.weight
-                if run_cfg.model.use_rgcn:
-                    entity_struct = encoder(entity_sem, edge_index, edge_type)
-                else:
-                    entity_struct = encoder(entity_sem, relation_emb.embedding.weight, edge_index, edge_type)
-                entity_final = fusion(entity_sem, entity_struct)
+                entity_final = fusion(entity_sem, entity_struct_cached)
                 context, _ = build_context(
                     attention=attention, h=h, r_id=r, r_emb=relation_emb(r),
                     neighbor_cache=neighbor_cache, entity_emb=entity_final,

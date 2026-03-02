@@ -39,6 +39,8 @@
     "leave_one_out": true,
     "max_steps_per_epoch": 200,
     "compgcn_edge_sample_ratio": 0.1,
+    "encoder_refresh_interval": 1,
+    "encoder_refresh_sample_ratio": 0.2,
     "eval_topk": 100
   },
   "sampling": {
