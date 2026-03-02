@@ -50,7 +50,7 @@ def preprocess_semantic_embeddings(
             batch_ids = entity_ids[i : i + batch_size]
             texts = [entities_dict[eid] for eid in batch_ids]
 
-            inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="pt").to(device)
+            inputs = tokenizer(texts, padding=True, truncation=True, max_length=512, return_tensors="pt").to(device)
             with torch.no_grad():
                 outputs = model(**inputs)
                 embeddings_batch = outputs.last_hidden_state[:, 0, :]  # Use [CLS] token
