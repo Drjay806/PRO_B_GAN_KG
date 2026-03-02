@@ -1,0 +1,56 @@
+{
+  "data": {
+    "train_path": "/content/drive/MyDrive/kg_data/raw/prothgt/knowledge_graphs/tsv/train.tsv",
+    "val_path": "/content/drive/MyDrive/kg_data/raw/prothgt/knowledge_graphs/tsv/val.tsv",
+    "test_path": "/content/drive/MyDrive/kg_data/raw/prothgt/knowledge_graphs/tsv/test.tsv",
+    "delimiter": "\t",
+    "has_header": false
+  },
+  "model": {
+    "embedding_dim": 768,
+    "compgcn_layers": 2,
+    "dropout": 0.2,
+    "comp_op": "mul",
+    "use_rgcn": false,
+    "fusion": "concat",
+    "attention_hidden": 768,
+    "generator_hidden": 1024,
+    "discriminator_hidden": 1024,
+    "noise_dim": 128
+  },
+  "training": {
+    "seed": 7,
+    "batch_size": 512,
+    "num_workers": 2,
+    "lr": 0.0005,
+    "weight_decay": 0.00001,
+    "max_epochs_pretrain": 5,
+    "max_epochs_warmup": 10,
+    "max_epochs_gan": 30,
+    "patience_pretrain": 5,
+    "patience_warmup": 10,
+    "patience_gan": 15,
+    "grad_clip": 1.0,
+    "gan_k": 3,
+    "lambda_adv": 0.1,
+    "lambda_adv_max": 0.5,
+    "lambda_adv_step": 0.05,
+    "neighbor_dropout": 0.4,
+    "leave_one_out": true,
+    "eval_topk": 1000
+  },
+  "sampling": {
+    "easy_ratio": 0.5,
+    "medium_ratio": 0.3,
+    "hard_ratio": 0.2,
+    "hard_update_interval": 5
+  },
+  "optional": {
+    "use_rl_evidence": false,
+    "use_patch_reranker": false
+  },
+  "semantic": {
+    "embeddings_dir": "/content/drive/MyDrive/kg_data/raw/prothgt/for_the_model/embeddings",
+    "entity_type_mapping": {}
+  }
+}
