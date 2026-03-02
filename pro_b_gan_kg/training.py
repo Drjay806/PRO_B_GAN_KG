@@ -516,6 +516,13 @@ def run_training(config: Dict, output_dir: Path) -> None:
             scaler.step(optimizer)
             scaler.update()
             losses.append(loss.item())
+            if (step + 1) % 50 == 0:
+                logger.info(
+                    "  Warmup epoch %d  step %d/%s  loss %.4f",
+                    epoch + 1, step + 1,
+                    str(max_steps) if max_steps > 0 else "?",
+                    float(np.mean(losses[-50:])),
+                )
 
         metrics = evaluate(id_triples.val)
         logger.info("Warm-up epoch %d loss %.4f mrr %.4f", epoch + 1, float(np.mean(losses)), metrics["mrr"])
@@ -603,6 +610,13 @@ def run_training(config: Dict, output_dir: Path) -> None:
             scaler.step(optimizer)
             scaler.update()
             losses.append(loss.item())
+            if (step + 1) % 50 == 0:
+                logger.info(
+                    "  GAN epoch %d  step %d/%s  loss %.4f",
+                    epoch + 1, step + 1,
+                    str(max_steps) if max_steps > 0 else "?",
+                    float(np.mean(losses[-50:])),
+                )
 
         metrics = evaluate(id_triples.val)
         logger.info("GAN epoch %d loss %.4f mrr %.4f", epoch + 1, float(np.mean(losses)), metrics["mrr"])
