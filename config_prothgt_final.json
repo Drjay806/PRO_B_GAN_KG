@@ -38,6 +38,7 @@
     "neighbor_dropout": 0.4,
     "leave_one_out": true,
     "eval_topk": 1000,
+    "max_eval_samples": 3000,
     "encoder_refresh_interval": 5,
     "encoder_refresh_sample_ratio": 0.20
   },
