@@ -1,3 +1,4 @@
+import json
 import math
 from dataclasses import asdict
 from pathlib import Path
@@ -86,8 +87,9 @@ def build_context(
     neighbor_dropout: float,
     leave_one_out: bool,
     true_t: torch.Tensor,
+    max_neighbors: int = 64,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    max_neighbors = 64
+    # max_neighbors is now a parameter (config: training.max_neighbors)
     batch_pairs = []
     # Extract scalar values using numpy to handle autocast state issues
     h_ids = h.cpu().detach().numpy().astype(int)
@@ -332,6 +334,19 @@ def run_training(config: Dict, output_dir: Path) -> None:
     )
     logger.info("Negative sampler ready")
 
+    # Build filtered evaluation lookup — maps (h, r) → set of ALL known true tails
+    # across train + val + test. When ranking, known true tails other than the current
+    # query's target are removed so the model isn't penalized for predicting valid answers.
+    # This is the standard filtered protocol used in all KG benchmark papers.
+    logger.info("Building filtered evaluation lookup...")
+    known_tails: Dict[Tuple[int, int], set] = {}
+    for h_id, r_id, t_id in id_triples.train + id_triples.val + id_triples.test:
+        key = (h_id, r_id)
+        if key not in known_tails:
+            known_tails[key] = set()
+        known_tails[key].add(t_id)
+    logger.info("Filtered lookup built: %d (h,r) pairs", len(known_tails))
+
     def evaluate(triples: List[Tuple[int, int, int]]) -> Dict[str, float]:
         # Cap evaluation size for speed (controlled by max_eval_samples config)
         if run_cfg.training.max_eval_samples > 0 and len(triples) > run_cfg.training.max_eval_samples:
@@ -372,15 +387,25 @@ def run_training(config: Dict, output_dir: Path) -> None:
                     neighbor_dropout=0.0,
                     leave_one_out=False,
                     true_t=torch.tensor([t_id], device=device),
+                    max_neighbors=run_cfg.training.max_neighbors,
                 )
                 noise = torch.randn(1, run_cfg.model.noise_dim, device=device)
                 t_hat = generator(entity_final[h], r, context, noise)
                 t_hat = t_hat / (torch.norm(t_hat, dim=-1, keepdim=True) + 1e-9)
 
-                scores, ids = retriever.search(t_hat.detach().cpu().numpy().astype(np.float32), run_cfg.training.eval_topk)
+                scores, ids = retriever.search(
+                    t_hat.detach().cpu().numpy().astype(np.float32),
+                    # Retrieve extra candidates to account for filtered-out known tails
+                    min(run_cfg.training.eval_topk + len(known_tails.get((h_id, r_id), set())), num_entities),
+                )
                 ids = ids[0].tolist()
-                if t_id in ids:
-                    rank = ids.index(t_id) + 1
+
+                # Filtered ranking: remove all known true tails except the current target
+                other_known = known_tails.get((h_id, r_id), set()) - {t_id}
+                ids_filtered = [i for i in ids if i not in other_known]
+
+                if t_id in ids_filtered:
+                    rank = ids_filtered.index(t_id) + 1
                 else:
                     rank = run_cfg.training.eval_topk + 1
                 ranks.append(rank)
@@ -396,15 +421,61 @@ def run_training(config: Dict, output_dir: Path) -> None:
     logger.info("Preparing training dataset...")
     dataset = TripleDataset(id_triples.train)
     logger.info(f"Dataset created with {len(dataset)} triples")
-    logger.info("Starting warm-up")
-    best_mrr = -1.0
-    best_state = None
 
     loader = DataLoader(dataset, batch_size=run_cfg.training.batch_size, shuffle=True)
-
-    logger.info(f"Starting warmup phase ({run_cfg.training.max_epochs_warmup} epochs)...")
     scaler = torch.cuda.amp.GradScaler()
     max_steps = run_cfg.training.max_steps_per_epoch
+
+    # ── Resume logic ──────────────────────────────────────────────────────────
+    # training_state.json is written after every epoch so a Colab disconnect
+    # can be recovered by simply re-running the same command.
+    state_path = output_dir / "training_state.json"
+    resume_phase = "warmup"   # which phase to start from
+    resume_epoch = 0          # which epoch within that phase to start from
+    best_mrr = -1.0
+
+    if run_cfg.training.resume and state_path.exists():
+        saved = json.loads(state_path.read_text())
+        resume_phase = saved["phase"]
+        resume_epoch = saved["epoch"] + 1   # next epoch after the last completed one
+        best_mrr = saved["best_mrr"]
+        ckpt_path = output_dir / ("best_model.pt" if resume_phase == "gan" else "warmup_best.pt")
+        if ckpt_path.exists():
+            ckpt = torch.load(ckpt_path, map_location=device)
+            entity_emb.load_state_dict(ckpt["entity_emb"])
+            relation_emb.load_state_dict(ckpt["relation_emb"])
+            encoder.load_state_dict(ckpt["encoder"])
+            fusion.load_state_dict(ckpt["fusion"])
+            attention.load_state_dict(ckpt["attention"])
+            generator.load_state_dict(ckpt["generator"])
+            discriminator.load_state_dict(ckpt["discriminator"])
+            logger.info(
+                "Resumed from %s — phase=%s epoch=%d best_mrr=%.4f",
+                ckpt_path.name, resume_phase, resume_epoch, best_mrr,
+            )
+        else:
+            logger.warning("training_state.json found but checkpoint file missing — starting fresh")
+            resume_phase = "warmup"
+            resume_epoch = 0
+            best_mrr = -1.0
+    else:
+        logger.info("Starting warm-up")
+    # ─────────────────────────────────────────────────────────────────────────
+
+    best_state = None
+
+    # CSV file that logs every epoch's metrics — survives Colab disconnects and enables plotting
+    metrics_csv = output_dir / "metrics_log.csv"
+    if not metrics_csv.exists():
+        metrics_csv.write_text("phase,epoch,loss,mrr,hits@1,hits@3,hits@10\n")
+
+    def _log_metrics_csv(phase: str, epoch: int, loss: float, m: Dict) -> None:
+        with metrics_csv.open("a") as f:
+            f.write(f"{phase},{epoch},{loss:.6f},{m['mrr']:.6f},{m['hits@1']:.6f},{m['hits@3']:.6f},{m['hits@10']:.6f}\n")
+
+    def _save_training_state(phase: str, epoch: int, mrr: float) -> None:
+        """Persist current training position so a restart can resume here."""
+        state_path.write_text(json.dumps({"phase": phase, "epoch": epoch, "best_mrr": mrr}))
 
     def _refresh_encoder(epoch: int) -> torch.Tensor:
         """Compute and cache CompGCN structural embeddings for one epoch.
@@ -474,7 +545,16 @@ def run_training(config: Dict, output_dir: Path) -> None:
             logger.info("Epoch %d: encoder cache rebuilt (eval mode, no grad)", epoch + 1)
         return cached
 
-    for epoch in range(run_cfg.training.max_epochs_warmup):
+    logger.info(f"Starting warmup phase ({run_cfg.training.max_epochs_warmup} epochs)...")
+    if resume_phase == "warmup":
+        warmup_start = resume_epoch
+        if warmup_start > 0:
+            logger.info("Resuming warmup from epoch %d", warmup_start + 1)
+    else:
+        warmup_start = run_cfg.training.max_epochs_warmup  # skip entirely
+        logger.info("Warmup already complete, skipping to GAN phase")
+
+    for epoch in range(warmup_start, run_cfg.training.max_epochs_warmup):
         entity_struct_cached = _refresh_encoder(epoch)
         logger.info("Warmup epoch %d: GNN pass complete, starting batch loop", epoch + 1)
 
@@ -505,6 +585,7 @@ def run_training(config: Dict, output_dir: Path) -> None:
                     neighbor_dropout=run_cfg.training.neighbor_dropout,
                     leave_one_out=run_cfg.training.leave_one_out,
                     true_t=t,
+                    max_neighbors=run_cfg.training.max_neighbors,
                 )
 
                 noise = torch.randn(h.shape[0], run_cfg.model.noise_dim, device=device)
@@ -530,7 +611,14 @@ def run_training(config: Dict, output_dir: Path) -> None:
                 )
 
         metrics = evaluate(id_triples.val)
-        logger.info("Warm-up epoch %d loss %.4f mrr %.4f", epoch + 1, float(np.mean(losses)), metrics["mrr"])
+        logger.info(
+            "[Warmup %d/%d] loss=%.4f | val MRR=%.4f  hits@1=%.4f  hits@3=%.4f  hits@10=%.4f",
+            epoch + 1, run_cfg.training.max_epochs_warmup,
+            float(np.mean(losses)),
+            metrics["mrr"], metrics["hits@1"], metrics["hits@3"], metrics["hits@10"],
+        )
+        _save_training_state("warmup", epoch, metrics["mrr"])
+        _log_metrics_csv("warmup", epoch + 1, float(np.mean(losses)), metrics)
         if metrics["mrr"] > best_mrr:
             best_mrr = metrics["mrr"]
             best_state = {
@@ -559,7 +647,10 @@ def run_training(config: Dict, output_dir: Path) -> None:
     best_mrr = -1.0  # reset for GAN phase
     best_state = None
     logger.info("Starting adversarial training")
-    for epoch in range(run_cfg.training.max_epochs_gan):
+    gan_start = resume_epoch if resume_phase == "gan" else 0
+    if gan_start > 0:
+        logger.info("Resuming GAN from epoch %d", gan_start + 1)
+    for epoch in range(gan_start, run_cfg.training.max_epochs_gan):
         entity_struct_cached = _refresh_encoder(epoch)
         logger.info("GAN epoch %d: GNN pass complete, starting batch loop", epoch + 1)
 
@@ -586,6 +677,7 @@ def run_training(config: Dict, output_dir: Path) -> None:
                         neighbor_cache=neighbor_cache, entity_emb=entity_final,
                         neighbor_dropout=run_cfg.training.neighbor_dropout,
                         leave_one_out=run_cfg.training.leave_one_out, true_t=t,
+                        max_neighbors=run_cfg.training.max_neighbors,
                     )
                     noise = torch.randn(h.shape[0], run_cfg.model.noise_dim, device=device)
                     t_hat = generator(entity_final[h], relation_emb(r), context, noise)
@@ -611,6 +703,7 @@ def run_training(config: Dict, output_dir: Path) -> None:
                     neighbor_cache=neighbor_cache, entity_emb=entity_final,
                     neighbor_dropout=run_cfg.training.neighbor_dropout,
                     leave_one_out=run_cfg.training.leave_one_out, true_t=t,
+                    max_neighbors=run_cfg.training.max_neighbors,
                 )
                 noise = torch.randn(h.shape[0], run_cfg.model.noise_dim, device=device)
                 t_hat = generator(entity_final[h], relation_emb(r), context, noise)
@@ -636,7 +729,14 @@ def run_training(config: Dict, output_dir: Path) -> None:
                 )
 
         metrics = evaluate(id_triples.val)
-        logger.info("GAN epoch %d loss %.4f mrr %.4f", epoch + 1, float(np.mean(losses)), metrics["mrr"])
+        logger.info(
+            "[GAN %d/%d] loss=%.4f | val MRR=%.4f  hits@1=%.4f  hits@3=%.4f  hits@10=%.4f",
+            epoch + 1, run_cfg.training.max_epochs_gan,
+            float(np.mean(losses)),
+            metrics["mrr"], metrics["hits@1"], metrics["hits@3"], metrics["hits@10"],
+        )
+        _save_training_state("gan", epoch, metrics["mrr"])
+        _log_metrics_csv("gan", epoch + 1, float(np.mean(losses)), metrics)
         if metrics["mrr"] > best_mrr:
             best_mrr = metrics["mrr"]
             best_state = {
@@ -656,6 +756,12 @@ def run_training(config: Dict, output_dir: Path) -> None:
 
     if best_state:
         torch.save(best_state, output_dir / "best_model.pt")
+        # Restore best weights so FAISS index and final embeddings reflect peak performance
+        entity_emb.load_state_dict(best_state["entity_emb"])
+        relation_emb.load_state_dict(best_state["relation_emb"])
+        encoder.load_state_dict(best_state["encoder"])
+        fusion.load_state_dict(best_state["fusion"])
+        logger.info("Restored best GAN checkpoint (mrr %.4f) for final artifact generation", best_mrr)
 
     logger.info("Building and saving FAISS index")
     entity_sem = entity_emb.embedding.weight

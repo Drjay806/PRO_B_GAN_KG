@@ -51,6 +51,8 @@ class TrainingConfig:
     encoder_refresh_interval: int = 5  # update CompGCN weights every N epochs; 0 = frozen
     encoder_refresh_sample_ratio: float = 0.20  # fraction of edges used during the encoder gradient update
     max_eval_samples: int = -1  # -1 = all val triples; set >0 to cap for faster test evaluation
+    resume: bool = True  # if True, auto-resume from last saved checkpoint if output_dir already has one
+    max_neighbors: int = 64  # max neighbor context per entity in attention; higher = more context, more memory
 
 
 @dataclass
