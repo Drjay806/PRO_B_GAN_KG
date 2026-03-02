@@ -249,10 +249,9 @@ def run_training(config: Dict, output_dir: Path) -> None:
 
     edge_index, edge_type = build_edge_index(id_triples.train)
     
-    # Sample edges to reduce memory for CompGCN
-    # Use 10% for test run - enough to learn graph structure patterns
+    # Sample edges to reduce memory for CompGCN (controlled by config)
     num_edges = edge_index.shape[1]
-    sample_ratio = 0.1
+    sample_ratio = run_cfg.training.compgcn_edge_sample_ratio
     num_sample = max(int(num_edges * sample_ratio), 10000)
     perm = torch.randperm(num_edges)[:num_sample]
     edge_index_sample = edge_index[:, perm]
