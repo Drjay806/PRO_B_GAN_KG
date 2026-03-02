@@ -39,6 +39,7 @@
     "leave_one_out": true,
     "eval_topk": 1000,
     "max_eval_samples": 3000,
+    "compgcn_edge_sample_ratio": 0.5,
     "encoder_refresh_interval": 5,
     "encoder_refresh_sample_ratio": 0.20
   },

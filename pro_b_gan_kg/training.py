@@ -521,6 +521,11 @@ def run_training(config: Dict, output_dir: Path) -> None:
                 pos = torch.sum(e_final[ref_h] * e_final[ref_t], dim=-1)
                 neg = torch.sum(e_final[ref_h].unsqueeze(1) * e_final[ref_neg], dim=-1).mean(dim=1)
                 enc_loss = torch.relu(1.0 - pos + neg).mean()
+            if not torch.isfinite(enc_loss):
+                logger.warning("Epoch %d: enc_loss is NaN/Inf — skipping encoder update", epoch + 1)
+                encoder_optimizer.zero_grad(set_to_none=True)
+                is_refresh = False  # skip the backward below
+        if is_refresh:
             scaler.scale(enc_loss).backward()
             scaler.unscale_(encoder_optimizer)
             torch.nn.utils.clip_grad_norm_(list(encoder.parameters()), run_cfg.training.grad_clip)
@@ -532,14 +537,15 @@ def run_training(config: Dict, output_dir: Path) -> None:
             )
 
         # Always rebuild the full epoch cache (eval/no_grad) after possible weight update
+        # Use FP16 autocast to halve memory: 6M edges × 768-dim × FP16 = ~9 GB vs ~18 GB in FP32
         encoder.eval()
-        with torch.no_grad():
+        with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.float16):
             e_sem_full = entity_emb.embedding.weight.detach()
             r_w_full = relation_emb.embedding.weight.detach()
             if run_cfg.model.use_rgcn:
-                cached = encoder(e_sem_full, edge_index, edge_type).detach()
+                cached = encoder(e_sem_full, edge_index, edge_type).detach().float()
             else:
-                cached = encoder(e_sem_full, r_w_full, edge_index, edge_type).detach()
+                cached = encoder(e_sem_full, r_w_full, edge_index, edge_type).detach().float()
         encoder.train()
         if not is_refresh:
             logger.info("Epoch %d: encoder cache rebuilt (eval mode, no grad)", epoch + 1)
