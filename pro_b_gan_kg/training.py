@@ -87,12 +87,16 @@ def build_context(
     true_t: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     batch_pairs = []
-    # Ensure tensors are on CPU for tolist() - autocast can cause state issues
-    h_list = h.cpu().tolist() if h.is_cuda else h.tolist()
-    r_list = r.cpu().tolist() if r.is_cuda else r.tolist()
-    t_list = true_t.cpu().tolist() if true_t.is_cuda else true_t.tolist()
+    # Extract scalar values using numpy to handle autocast state issues
+    h_ids = h.cpu().detach().numpy().astype(int)
+    r_ids = r.cpu().detach().numpy().astype(int)
+    t_ids = true_t.cpu().detach().numpy().astype(int)
     
-    for h_id, r_id, t_id in zip(h_list, r_list, t_list):
+    for h_id, r_id, t_id in zip(h_ids, r_ids, t_ids):
+        # Ensure IDs are Python scalars
+        h_id = int(h_id)
+        r_id = int(r_id)
+        t_id = int(t_id)
         neighbors = list(neighbor_cache.get(h_id, r_id))
         if leave_one_out and t_id in neighbors:
             neighbors = [n for n in neighbors if n != t_id]
@@ -414,10 +418,11 @@ def run_training(config: Dict, output_dir: Path) -> None:
             noise = torch.randn(h.shape[0], run_cfg.model.noise_dim, device=device)
             t_hat = generator(entity_final[h], relation_emb(r), context, noise)
 
-            h_cpu = h.cpu() if h.is_cuda else h
-            r_cpu = r.cpu() if r.is_cuda else r
-            t_cpu = t.cpu() if t.is_cuda else t
-            negatives = sampler.sample(list(zip(h_cpu.tolist(), r_cpu.tolist(), t_cpu.tolist())), num_negatives=10).to(device)
+            # Use numpy for reliable scalar extraction
+            h_ids = h.cpu().detach().numpy().astype(int)
+            r_ids = r.cpu().detach().numpy().astype(int)
+            t_ids = t.cpu().detach().numpy().astype(int)
+            negatives = sampler.sample(list(zip(h_ids, r_ids, t_ids)), num_negatives=10).to(device)
             pos_score = torch.sum(t_hat * entity_final[t], dim=-1)
             neg_score = torch.sum(t_hat.unsqueeze(1) * entity_final[negatives], dim=-1).mean(dim=1)
             loss = torch.relu(1.0 - pos_score + neg_score).mean()
@@ -496,10 +501,10 @@ def run_training(config: Dict, output_dir: Path) -> None:
                 fake_logits = discriminator(entity_final[h], relation_emb(r), t_hat, context)
                 adv_loss = torch.nn.functional.binary_cross_entropy_with_logits(fake_logits, torch.ones_like(fake_logits))
 
-                h_cpu = h.cpu() if h.is_cuda else h
-                r_cpu = r.cpu() if r.is_cuda else r
-                t_cpu = t.cpu() if t.is_cuda else t
-                negatives = sampler.sample(list(zip(h_cpu.tolist(), r_cpu.tolist(), t_cpu.tolist())), num_negatives=10).to(device)
+                h_ids = h.cpu().detach().numpy().astype(int)
+                r_ids = r.cpu().detach().numpy().astype(int)
+                t_ids = t.cpu().detach().numpy().astype(int)
+                negatives = sampler.sample(list(zip(h_ids, r_ids, t_ids)), num_negatives=10).to(device)
                 pos_score = torch.sum(t_hat * entity_final[t], dim=-1)
                 neg_score = torch.sum(t_hat.unsqueeze(1) * entity_final[negatives], dim=-1).mean(dim=1)
                 retrieval_loss = torch.relu(1.0 - pos_score + neg_score).mean()
