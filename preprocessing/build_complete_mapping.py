@@ -21,10 +21,24 @@ def _detect_id_column(df: pd.DataFrame) -> str | None:
     return None
 
 
+def _read_tsv(tsv_path: Path) -> pd.DataFrame:
+    """Read TSV robustly, falling back to tolerant parser for malformed rows."""
+    try:
+        return pd.read_csv(tsv_path, sep='\t', encoding='utf-8')
+    except Exception:
+        return pd.read_csv(
+            tsv_path,
+            sep='\t',
+            encoding='utf-8',
+            engine='python',
+            on_bad_lines='skip',
+        )
+
+
 def load_tsv_ids(tsv_path: Path) -> list:
     """Load entity IDs from TSV file in row order."""
     try:
-        df = pd.read_csv(tsv_path, sep='\t', encoding='utf-8')
+        df = _read_tsv(tsv_path)
         id_column = _detect_id_column(df)
         if id_column:
             ids = [str(x) for x in df[id_column].tolist() if pd.notna(x)]
@@ -72,14 +86,31 @@ def build_complete_mapping(metadata_dir: Path, output_path: Path):
         
         # Special handling for GO terms split by aspect F/P/C
         if tsv_file == 'go_terms.tsv':
-            df = pd.read_csv(tsv_path, sep='\t', encoding='utf-8')
+            df = _read_tsv(tsv_path)
             id_col = _detect_id_column(df)
             aspect_col = 'aspect' if 'aspect' in df.columns else None
+            namespace_col = 'namespace' if 'namespace' in df.columns else None
             if id_col and aspect_col:
-                for aspect_type in ['GO_term_F', 'GO_term_P', 'GO_term_C']:
-                    aspect_char = aspect_type.split('_')[-1]
-                    aspect_df = df[df[aspect_col].astype(str).str.upper() == aspect_char]
+                mapping = {
+                    'GO_term_F': 'F',
+                    'GO_term_P': 'P',
+                    'GO_term_C': 'C',
+                }
+                for aspect_type, code in mapping.items():
+                    aspect_df = df[df[aspect_col].astype(str).str.upper() == code]
                     ids = [str(x) for x in aspect_df[id_col].tolist() if pd.notna(x)]
+                    complete_mapping[aspect_type] = ids
+                    print(f"  ✓ {aspect_type}: {len(ids)} IDs")
+            elif id_col and namespace_col:
+                namespace_map = {
+                    'GO_term_F': ['molecular_function'],
+                    'GO_term_P': ['biological_process'],
+                    'GO_term_C': ['cellular_component'],
+                }
+                ns_series = df[namespace_col].astype(str).str.lower()
+                for aspect_type, labels in namespace_map.items():
+                    mask = ns_series.isin(labels)
+                    ids = [str(x) for x in df.loc[mask, id_col].tolist() if pd.notna(x)]
                     complete_mapping[aspect_type] = ids
                     print(f"  ✓ {aspect_type}: {len(ids)} IDs")
             else:
@@ -88,7 +119,7 @@ def build_complete_mapping(metadata_dir: Path, output_path: Path):
 
         # Special handling for Pathway vs kegg_Pathway split
         elif tsv_file == 'pathways.tsv':
-            df = pd.read_csv(tsv_path, sep='\t', encoding='utf-8')
+            df = _read_tsv(tsv_path)
             id_col = _detect_id_column(df)
             if not id_col:
                 print(f"  ⚠️  Could not detect ID column for pathways.tsv")
@@ -106,7 +137,7 @@ def build_complete_mapping(metadata_dir: Path, output_path: Path):
                 non_kegg_df = df[~source_series.str.contains('kegg', na=False)]
             else:
                 id_series = df[id_col].astype(str)
-                kegg_mask = id_series.str.contains('kegg|map\d+|hsa\d+', case=False, regex=True)
+                kegg_mask = id_series.str.contains(r'kegg|map\d+|hsa\d+', case=False, regex=True)
                 kegg_df = df[kegg_mask]
                 non_kegg_df = df[~kegg_mask]
 
