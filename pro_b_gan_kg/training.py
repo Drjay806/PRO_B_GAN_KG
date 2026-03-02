@@ -250,9 +250,9 @@ def run_training(config: Dict, output_dir: Path) -> None:
     edge_index, edge_type = build_edge_index(id_triples.train)
     
     # Sample edges to reduce memory for CompGCN
-    # Keep ~50% of edges for faster training
+    # Use 10% for test run - enough to learn graph structure patterns
     num_edges = edge_index.shape[1]
-    sample_ratio = 0.5
+    sample_ratio = 0.1
     num_sample = max(int(num_edges * sample_ratio), 10000)
     perm = torch.randperm(num_edges)[:num_sample]
     edge_index_sample = edge_index[:, perm]
@@ -435,6 +435,7 @@ def run_training(config: Dict, output_dir: Path) -> None:
                 neg_score = torch.sum(t_hat.unsqueeze(1) * entity_final[negatives], dim=-1).mean(dim=1)
                 loss = torch.relu(1.0 - pos_score + neg_score).mean()
 
+            torch.cuda.empty_cache()
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(all_params, run_cfg.training.grad_clip)

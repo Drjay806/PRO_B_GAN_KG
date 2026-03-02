@@ -2,6 +2,7 @@ from typing import Tuple
 
 import torch
 from torch import nn
+import torch.utils.checkpoint as checkpoint
 
 
 def comp_op(lhs: torch.Tensor, rhs: torch.Tensor, op: str) -> torch.Tensor:
@@ -34,8 +35,9 @@ class CompGCNLayer(nn.Module):
         rel = rel_emb[edge_type]
         msg = comp_op(entity_emb[src], rel, self.op)
 
+        # Use scatter_add instead of index_add_ to avoid in-place gradient issues
         out = torch.zeros_like(entity_emb)
-        out.index_add_(0, dst, msg)
+        out = out.scatter_add(0, dst.unsqueeze(-1).expand_as(msg), msg)
 
         out = self.lin(out)
         out = self.dropout(out)
@@ -59,5 +61,7 @@ class CompGCN(nn.Module):
         h = entity_emb
         r = rel_emb
         for layer in self.layers:
-            h, r = layer(h, r, edge_index, edge_type)
+            # Gradient checkpointing: recompute activations during backward
+            # instead of storing them, trading compute for memory
+            h, r = checkpoint.checkpoint(layer, h, r, edge_index, edge_type, use_reentrant=False)
         return h
