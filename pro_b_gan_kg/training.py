@@ -124,8 +124,9 @@ def build_context(
     )
     empty = mask.sum(dim=1) == 0
     if empty.any():
-        context[empty] = 0.0
-        alpha[empty] = 0.0
+        # Use torch.where instead of in-place indexing to avoid gradient version mismatch
+        context = torch.where(empty.unsqueeze(-1), torch.zeros_like(context), context)
+        alpha = torch.where(empty.unsqueeze(-1), torch.zeros_like(alpha), alpha)
     return context, alpha
 
 

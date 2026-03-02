@@ -43,15 +43,23 @@ def batch_neighbors(
     device: torch.device,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     max_len = max((len(n) for n in batch_pairs), default=1)
-    batch_size = len(batch_pairs)
-    mask = torch.zeros(batch_size, max_len, dtype=torch.bool, device=device)
-    neighbor_emb = torch.zeros(batch_size, max_len, entity_emb.shape[1], device=device)
 
-    for i, neighbors in enumerate(batch_pairs):
-        if not neighbors:
-            continue
+    # Build padded index and mask tensors (no in-place ops on graph-tracked tensors)
+    padded_ids = []
+    mask_rows = []
+    for neighbors in batch_pairs:
         length = len(neighbors)
-        mask[i, :length] = 1
-        neighbor_emb[i, :length] = entity_emb[torch.tensor(neighbors, device=device)]
+        if length == 0:
+            padded_ids.append([0] * max_len)
+            mask_rows.append([False] * max_len)
+        else:
+            padded_ids.append(neighbors + [0] * (max_len - length))
+            mask_rows.append([True] * length + [False] * (max_len - length))
+
+    idx = torch.tensor(padded_ids, dtype=torch.long, device=device)   # [B, max_len]
+    mask = torch.tensor(mask_rows, dtype=torch.bool, device=device)    # [B, max_len]
+
+    # Single vectorised gather — gradient-safe, no in-place assignment
+    neighbor_emb = entity_emb[idx]  # [B, max_len, dim]
 
     return neighbor_emb, mask
