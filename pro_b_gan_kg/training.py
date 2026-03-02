@@ -178,6 +178,7 @@ def run_training(config: Dict, output_dir: Path) -> None:
     logger = setup_logging(output_dir)
     set_seed(run_cfg.training.seed)
 
+    logger.info("Starting data loading and preparation...")
     mappings, id_triples = load_and_prepare(
         train_path=Path(run_cfg.data.train_path),
         val_path=Path(run_cfg.data.val_path),
@@ -186,6 +187,7 @@ def run_training(config: Dict, output_dir: Path) -> None:
         has_header=run_cfg.data.has_header,
         output_dir=output_dir,
     )
+    logger.info(f"Data loading complete: {len(mappings.entity2id)} entities, {len(mappings.rel2id)} relations")
 
     num_entities = len(mappings.entity2id)
     num_relations = len(mappings.rel2id)
@@ -215,6 +217,7 @@ def run_training(config: Dict, output_dir: Path) -> None:
     )
 
     if run_cfg.training.max_epochs_pretrain > 0:
+        logger.info(f"Starting pretrain phase ({run_cfg.training.max_epochs_pretrain} epochs)...")
         pretrain_distmult(
             entity_emb=entity_emb,
             relation_emb=relation_emb,
@@ -226,10 +229,16 @@ def run_training(config: Dict, output_dir: Path) -> None:
             batch_size=run_cfg.training.batch_size,
             logger=logger,
         )
+        logger.info("Pretrain phase complete")
+
+    logger.info("Building edge index and neighbor cache...")
 
     edge_index, edge_type = build_edge_index(id_triples.train)
     edge_index = edge_index.to(device)
     edge_type = edge_type.to(device)
+    logger.info(f"Edge index built: {edge_index.shape}")
+
+    logger.info("Initializing encoder and GAN models...")
 
     if run_cfg.model.use_rgcn:
         encoder = RGCN(
@@ -281,8 +290,10 @@ def run_training(config: Dict, output_dir: Path) -> None:
     optimizer = torch.optim.Adam(all_params, lr=run_cfg.training.lr, weight_decay=run_cfg.training.weight_decay)
 
     neighbor_cache = build_neighbor_cache(id_triples.train)
+    logger.info(f"Neighbor cache built: {len(neighbor_cache.pairs)} (h, r) pairs")
     neighbor_cache.save(output_dir / "neighbors_index.npy")
 
+    logger.info("Initializing negative sampler...")
     sampler = NegativeSampler(
         num_entities=num_entities,
         train_pairs=neighbor_cache.pairs,
@@ -290,6 +301,7 @@ def run_training(config: Dict, output_dir: Path) -> None:
         medium_ratio=run_cfg.sampling.medium_ratio,
         hard_ratio=run_cfg.sampling.hard_ratio,
     )
+    logger.info("Negative sampler ready")
 
     def evaluate(triples: List[Tuple[int, int, int]]) -> Dict[str, float]:
         entity_emb.eval()
@@ -345,13 +357,16 @@ def run_training(config: Dict, output_dir: Path) -> None:
             generator.train()
             return metrics
 
+    logger.info("Preparing training dataset...")
+    dataset = TripleDataset(id_triples.train)
+    logger.info(f"Dataset created with {len(dataset)} triples")
     logger.info("Starting warm-up")
     best_mrr = -1.0
     best_state = None
 
-    dataset = TripleDataset(id_triples.train)
     loader = DataLoader(dataset, batch_size=run_cfg.training.batch_size, shuffle=True)
 
+    logger.info(f"Starting warmup phase ({run_cfg.training.max_epochs_warmup} epochs)...")
     for epoch in range(run_cfg.training.max_epochs_warmup):
         losses = []
         for batch in loader:
