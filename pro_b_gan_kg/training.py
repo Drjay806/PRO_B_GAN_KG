@@ -545,7 +545,19 @@ def run_training(config: Dict, output_dir: Path) -> None:
 
     if best_state:
         torch.save(best_state, output_dir / "warmup_best.pt")
+        # Restore best warmup weights before GAN phase starts —
+        # GAN should begin from the best learned representations, not last epoch
+        entity_emb.load_state_dict(best_state["entity_emb"])
+        relation_emb.load_state_dict(best_state["relation_emb"])
+        encoder.load_state_dict(best_state["encoder"])
+        fusion.load_state_dict(best_state["fusion"])
+        attention.load_state_dict(best_state["attention"])
+        generator.load_state_dict(best_state["generator"])
+        discriminator.load_state_dict(best_state["discriminator"])
+        logger.info("Restored best warmup checkpoint (mrr %.4f) before GAN phase", best_mrr)
 
+    best_mrr = -1.0  # reset for GAN phase
+    best_state = None
     logger.info("Starting adversarial training")
     for epoch in range(run_cfg.training.max_epochs_gan):
         entity_struct_cached = _refresh_encoder(epoch)
