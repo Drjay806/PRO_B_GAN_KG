@@ -234,9 +234,19 @@ def run_training(config: Dict, output_dir: Path) -> None:
     logger.info("Building edge index and neighbor cache...")
 
     edge_index, edge_type = build_edge_index(id_triples.train)
-    edge_index = edge_index.to(device)
-    edge_type = edge_type.to(device)
-    logger.info(f"Edge index built: {edge_index.shape}")
+    
+    # Sample edges to reduce memory for CompGCN
+    # Keep ~50% of edges for faster training
+    num_edges = edge_index.shape[1]
+    sample_ratio = 0.5
+    num_sample = max(int(num_edges * sample_ratio), 10000)
+    perm = torch.randperm(num_edges)[:num_sample]
+    edge_index_sample = edge_index[:, perm]
+    edge_type_sample = edge_type[perm]
+    
+    edge_index = edge_index_sample.to(device)
+    edge_type = edge_type_sample.to(device)
+    logger.info(f"Edge index sampled: {edge_index.shape} (from {num_edges} edges)")
 
     logger.info("Initializing encoder and GAN models...")
 
