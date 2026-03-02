@@ -8,7 +8,7 @@
   },
   "model": {
     "embedding_dim": 768,
-    "compgcn_layers": 2,
+    "compgcn_layers": 1,
     "dropout": 0.2,
     "comp_op": "mul",
     "use_rgcn": false,
@@ -20,7 +20,7 @@
   },
   "training": {
     "seed": 7,
-    "batch_size": 128,
+    "batch_size": 32,
     "num_workers": 2,
     "lr": 0.0005,
     "weight_decay": 0.00001,
