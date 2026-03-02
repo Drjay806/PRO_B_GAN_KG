@@ -500,8 +500,12 @@ def run_training(config: Dict, output_dir: Path) -> None:
             encoder.train()
             encoder_optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                e_sem = entity_emb.embedding.weight.detach()
-                r_w = relation_emb.embedding.weight.detach()
+                e_sem = torch.nn.functional.normalize(
+                    entity_emb.embedding.weight.detach(), dim=-1
+                )
+                r_w = torch.nn.functional.normalize(
+                    relation_emb.embedding.weight.detach(), dim=-1
+                )
                 if run_cfg.model.use_rgcn:
                     e_struct = encoder(e_sem, ei_s, et_s)
                 else:
@@ -538,15 +542,28 @@ def run_training(config: Dict, output_dir: Path) -> None:
 
         # Always rebuild the full epoch cache (eval/no_grad) after possible weight update
         # Use FP16 autocast to halve memory: 6M edges × 768-dim × FP16 = ~9 GB vs ~18 GB in FP32
+        # Normalize inputs first to prevent FP16 overflow from large post-pretrain norms
         encoder.eval()
         with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.float16):
-            e_sem_full = entity_emb.embedding.weight.detach()
-            r_w_full = relation_emb.embedding.weight.detach()
+            e_sem_full = torch.nn.functional.normalize(
+                entity_emb.embedding.weight.detach(), dim=-1
+            )
+            r_w_full = torch.nn.functional.normalize(
+                relation_emb.embedding.weight.detach(), dim=-1
+            )
             if run_cfg.model.use_rgcn:
                 cached = encoder(e_sem_full, edge_index, edge_type).detach().float()
             else:
                 cached = encoder(e_sem_full, r_w_full, edge_index, edge_type).detach().float()
         encoder.train()
+        # Safety net: if encoder output still has NaN (e.g. bad init), replace with zeros
+        nan_frac = (~cached.isfinite()).float().mean().item()
+        if nan_frac > 0:
+            logger.warning(
+                "Epoch %d: entity_struct_cached has %.1f%% NaN/Inf — replacing with zeros",
+                epoch + 1, nan_frac * 100,
+            )
+            cached = torch.nan_to_num(cached, nan=0.0, posinf=0.0, neginf=0.0)
         if not is_refresh:
             logger.info("Epoch %d: encoder cache rebuilt (eval mode, no grad)", epoch + 1)
         return cached
