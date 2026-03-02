@@ -84,7 +84,15 @@ class RunConfig:
         training = TrainingConfig(**cfg.get("training", {}))
         sampling = SamplingConfig(**cfg.get("sampling", {}))
         optional = OptionalConfig(**cfg.get("optional", {}))
-        run = RunConfig(data=data, model=model, training=training, sampling=sampling, optional=optional)
+        semantic = SemanticConfig(**cfg.get("semantic", {}))
+        run = RunConfig(
+            data=data,
+            model=model,
+            training=training,
+            sampling=sampling,
+            optional=optional,
+            semantic=semantic,
+        )
         run.validate()
         return run
 

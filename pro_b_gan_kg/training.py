@@ -116,6 +116,63 @@ def build_context(
     return context, alpha
 
 
+def _initialize_from_semantic_files(
+    logger,
+    entity_weight: torch.Tensor,
+    entity2id: Dict[str, int],
+    embeddings_dir: Path,
+) -> int:
+    total_initialized = 0
+    embedding_dim = entity_weight.shape[1]
+    semantic_files = sorted(embeddings_dir.glob("*_embeddings.pt"))
+
+    if not semantic_files:
+        logger.warning(f"No semantic embedding files found in {embeddings_dir}")
+        return 0
+
+    for emb_path in semantic_files:
+        try:
+            payload = torch.load(emb_path, map_location="cpu")
+        except Exception as exc:
+            logger.warning(f"Failed to load semantic file {emb_path.name}: {exc}")
+            continue
+
+        if not isinstance(payload, dict):
+            logger.warning(
+                f"Skipping {emb_path.name}: expected dict[entity_id, vector], got {type(payload).__name__}"
+            )
+            continue
+
+        initialized_this_file = 0
+        skipped_dim = 0
+
+        for entity_name, vector in payload.items():
+            target_idx = entity2id.get(entity_name)
+            if target_idx is None:
+                continue
+
+            vector_tensor = torch.as_tensor(vector, dtype=entity_weight.dtype)
+            if vector_tensor.ndim != 1:
+                skipped_dim += 1
+                continue
+            if vector_tensor.shape[0] != embedding_dim:
+                skipped_dim += 1
+                continue
+
+            entity_weight[target_idx] = vector_tensor
+            initialized_this_file += 1
+
+        total_initialized += initialized_this_file
+        logger.info(
+            "Initialized %d entities from %s%s",
+            initialized_this_file,
+            emb_path.name,
+            f" (skipped_dim={skipped_dim})" if skipped_dim else "",
+        )
+
+    return total_initialized
+
+
 def run_training(config: Dict, output_dir: Path) -> None:
     run_cfg = RunConfig.from_dict(config)
     logger = setup_logging(output_dir)
@@ -138,19 +195,16 @@ def run_training(config: Dict, output_dir: Path) -> None:
     relation_emb = RelationEmbedding(num_relations, run_cfg.model.embedding_dim).to(device)
 
     if run_cfg.semantic and run_cfg.semantic.embeddings_dir:
-        from .semantic_encoders.cache import SemanticEmbeddingCache
-
-        logger.info(f"Loading semantic embeddings from {run_cfg.semantic.embeddings_dir}")
-        semantic_cache = SemanticEmbeddingCache(run_cfg.semantic.embeddings_dir)
-        try:
-            go_emb = semantic_cache.load_embeddings("go")
-            if go_emb is not None and go_emb.shape[1] == run_cfg.model.embedding_dim:
-                entity_emb.embedding.weight[:min(len(go_emb), num_entities)] = go_emb[
-                    : min(len(go_emb), num_entities)
-                ]
-                logger.info(f"Initialized {min(len(go_emb), num_entities)} entities with GO embeddings")
-        except Exception as e:
-            logger.warning(f"Failed to load GO embeddings: {e}")
+        embeddings_dir = Path(run_cfg.semantic.embeddings_dir)
+        logger.info(f"Loading semantic embeddings from {embeddings_dir}")
+        with torch.no_grad():
+            initialized = _initialize_from_semantic_files(
+                logger=logger,
+                entity_weight=entity_emb.embedding.weight,
+                entity2id=mappings.entity2id,
+                embeddings_dir=embeddings_dir,
+            )
+        logger.info(f"Semantic initialization complete: {initialized} entities initialized")
     else:
         logger.info("No semantic embeddings configured, using random initialization")
 
