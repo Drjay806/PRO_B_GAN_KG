@@ -79,7 +79,8 @@ def pretrain_distmult(
 def build_context(
     attention: ContextAttention,
     h: torch.Tensor,
-    r: torch.Tensor,
+    r_id: torch.Tensor,
+    r_emb: torch.Tensor,
     neighbor_cache: NeighborCache,
     entity_emb: torch.Tensor,
     neighbor_dropout: float,
@@ -89,7 +90,7 @@ def build_context(
     batch_pairs = []
     # Extract scalar values using numpy to handle autocast state issues
     h_ids = h.cpu().detach().numpy().astype(int)
-    r_ids = r.cpu().detach().numpy().astype(int)
+    r_ids = r_id.cpu().detach().numpy().astype(int)
     t_ids = true_t.cpu().detach().numpy().astype(int)
     
     for h_id, r_id, t_id in zip(h_ids, r_ids, t_ids):
@@ -114,7 +115,7 @@ def build_context(
 
     context, alpha = attention(
         h_emb=entity_emb[h],
-        r_emb=r,
+        r_emb=r_emb,
         neighbor_emb=neighbor_emb,
         mask=mask,
     )
@@ -345,11 +346,13 @@ def run_training(config: Dict, output_dir: Path) -> None:
             ranks = []
             for h_id, r_id, t_id in triples:
                 h = torch.tensor([h_id], device=device)
-                r = relation_emb(torch.tensor([r_id], device=device))
+                r_ids = torch.tensor([r_id], device=device)
+                r = relation_emb(r_ids)
                 context, _ = build_context(
                     attention=attention,
                     h=h,
-                    r=r,
+                    r_id=r_ids,
+                    r_emb=r,
                     neighbor_cache=neighbor_cache,
                     entity_emb=entity_final,
                     neighbor_dropout=0.0,
@@ -407,7 +410,8 @@ def run_training(config: Dict, output_dir: Path) -> None:
             context, _ = build_context(
                 attention=attention,
                 h=h,
-                r=relation_emb(r),
+                r_id=r,
+                r_emb=relation_emb(r),
                 neighbor_cache=neighbor_cache,
                 entity_emb=entity_final,
                 neighbor_dropout=run_cfg.training.neighbor_dropout,
@@ -470,7 +474,8 @@ def run_training(config: Dict, output_dir: Path) -> None:
                 context, _ = build_context(
                     attention=attention,
                     h=h,
-                    r=relation_emb(r),
+                    r_id=r,
+                    r_emb=relation_emb(r),
                     neighbor_cache=neighbor_cache,
                     entity_emb=entity_final,
                     neighbor_dropout=run_cfg.training.neighbor_dropout,
