@@ -333,6 +333,11 @@ def run_training(config: Dict, output_dir: Path) -> None:
     logger.info("Negative sampler ready")
 
     def evaluate(triples: List[Tuple[int, int, int]]) -> Dict[str, float]:
+        # Cap evaluation size for speed (controlled by max_eval_samples config)
+        if run_cfg.training.max_eval_samples > 0 and len(triples) > run_cfg.training.max_eval_samples:
+            import random
+            triples = random.sample(triples, run_cfg.training.max_eval_samples)
+        logger.info("  Evaluating on %d triples...", len(triples))
         entity_emb.eval()
         relation_emb.eval()
         encoder.eval()

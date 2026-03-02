@@ -41,6 +41,7 @@
     "compgcn_edge_sample_ratio": 0.1,
     "encoder_refresh_interval": 1,
     "encoder_refresh_sample_ratio": 0.2,
+    "max_eval_samples": 500,
     "eval_topk": 100
   },
   "sampling": {

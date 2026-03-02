@@ -50,6 +50,7 @@ class TrainingConfig:
     compgcn_edge_sample_ratio: float = 1.0  # fraction of edges passed to CompGCN each epoch; 1.0 = all edges
     encoder_refresh_interval: int = 5  # update CompGCN weights every N epochs; 0 = frozen
     encoder_refresh_sample_ratio: float = 0.20  # fraction of edges used during the encoder gradient update
+    max_eval_samples: int = -1  # -1 = all val triples; set >0 to cap for faster test evaluation
 
 
 @dataclass
