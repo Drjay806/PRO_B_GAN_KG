@@ -87,6 +87,7 @@ def build_context(
     leave_one_out: bool,
     true_t: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    max_neighbors = 64
     batch_pairs = []
     # Extract scalar values using numpy to handle autocast state issues
     h_ids = h.cpu().detach().numpy().astype(int)
@@ -105,6 +106,8 @@ def build_context(
             keep = max(1, int(len(neighbors) * (1 - neighbor_dropout)))
             if neighbors:
                 neighbors = list(np.random.choice(neighbors, size=keep, replace=False))
+        if len(neighbors) > max_neighbors:
+            neighbors = list(np.random.choice(neighbors, size=max_neighbors, replace=False))
         batch_pairs.append(neighbors)
 
     neighbor_emb, mask = batch_neighbors(batch_pairs, entity_emb, entity_emb.device)
