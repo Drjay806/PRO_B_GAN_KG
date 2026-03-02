@@ -395,10 +395,13 @@ def run_training(config: Dict, output_dir: Path) -> None:
     logger.info(f"Starting warmup phase ({run_cfg.training.max_epochs_warmup} epochs)...")
     # Use mixed precision (FP16) to reduce memory usage
     scaler = torch.cuda.amp.GradScaler()
+    max_steps = run_cfg.training.max_steps_per_epoch
     
     for epoch in range(run_cfg.training.max_epochs_warmup):
         losses = []
-        for batch in loader:
+        for step, batch in enumerate(loader):
+            if max_steps > 0 and step >= max_steps:
+                break
             h, r, t = [x.to(device) for x in batch]
 
             # Pre-compute neighbor IDs on CPU (numpy ops can't run inside autocast)
@@ -463,7 +466,9 @@ def run_training(config: Dict, output_dir: Path) -> None:
     logger.info("Starting adversarial training")
     for epoch in range(run_cfg.training.max_epochs_gan):
         losses = []
-        for batch in loader:
+        for step, batch in enumerate(loader):
+            if max_steps > 0 and step >= max_steps:
+                break
             h, r, t = [x.to(device) for x in batch]
 
             # Pre-compute CPU/numpy operations outside autocast

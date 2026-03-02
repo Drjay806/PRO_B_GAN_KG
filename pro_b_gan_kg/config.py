@@ -46,6 +46,7 @@ class TrainingConfig:
     neighbor_dropout: float = 0.4
     leave_one_out: bool = True
     eval_topk: int = 1000
+    max_steps_per_epoch: int = -1  # -1 = no limit; set >0 to cap batches for test runs
 
 
 @dataclass

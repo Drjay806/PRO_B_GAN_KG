@@ -20,7 +20,7 @@
   },
   "training": {
     "seed": 7,
-    "batch_size": 32,
+    "batch_size": 256,
     "num_workers": 2,
     "lr": 0.0005,
     "weight_decay": 0.00001,
@@ -37,7 +37,8 @@
     "lambda_adv_step": 0.05,
     "neighbor_dropout": 0.4,
     "leave_one_out": true,
-    "eval_topk": 1000
+    "max_steps_per_epoch": 200,
+    "eval_topk": 100
   },
   "sampling": {
     "easy_ratio": 0.5,
