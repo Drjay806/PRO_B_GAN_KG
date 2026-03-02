@@ -400,41 +400,40 @@ def run_training(config: Dict, output_dir: Path) -> None:
         for batch in loader:
             h, r, t = [x.to(device) for x in batch]
 
-            entity_sem = entity_emb.embedding.weight
-            # Use autocast for FP16 computation - reduces memory by ~50%
-            with torch.autocast(device_type='cuda', dtype=torch.float16):
-                if run_cfg.model.use_rgcn:
-                    entity_struct = encoder(entity_sem, edge_index, edge_type)
-                else:
-                    entity_struct = encoder(entity_sem, relation_emb.embedding.weight, edge_index, edge_type)
-
-                entity_final = fusion(entity_sem, entity_struct)
-            
-            context, _ = build_context(
-                attention=attention,
-                h=h,
-                r_id=r,
-                r_emb=relation_emb(r),
-                neighbor_cache=neighbor_cache,
-                entity_emb=entity_final,
-                neighbor_dropout=run_cfg.training.neighbor_dropout,
-                leave_one_out=run_cfg.training.leave_one_out,
-                true_t=t,
-            )
-
-            noise = torch.randn(h.shape[0], run_cfg.model.noise_dim, device=device)
-            t_hat = generator(entity_final[h], relation_emb(r), context, noise)
-
-            # Use numpy for reliable scalar extraction
+            # Pre-compute neighbor IDs on CPU (numpy ops can't run inside autocast)
             h_ids = h.cpu().detach().numpy().astype(int)
             r_ids = r.cpu().detach().numpy().astype(int)
             t_ids = t.cpu().detach().numpy().astype(int)
             negatives = sampler.sample(list(zip(h_ids, r_ids, t_ids)), num_negatives=10).to(device)
-            pos_score = torch.sum(t_hat * entity_final[t], dim=-1)
-            neg_score = torch.sum(t_hat.unsqueeze(1) * entity_final[negatives], dim=-1).mean(dim=1)
-            loss = torch.relu(1.0 - pos_score + neg_score).mean()
 
             optimizer.zero_grad(set_to_none=True)
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
+                entity_sem = entity_emb.embedding.weight
+                if run_cfg.model.use_rgcn:
+                    entity_struct = encoder(entity_sem, edge_index, edge_type)
+                else:
+                    entity_struct = encoder(entity_sem, relation_emb.embedding.weight, edge_index, edge_type)
+                entity_final = fusion(entity_sem, entity_struct)
+
+                context, _ = build_context(
+                    attention=attention,
+                    h=h,
+                    r_id=r,
+                    r_emb=relation_emb(r),
+                    neighbor_cache=neighbor_cache,
+                    entity_emb=entity_final,
+                    neighbor_dropout=run_cfg.training.neighbor_dropout,
+                    leave_one_out=run_cfg.training.leave_one_out,
+                    true_t=t,
+                )
+
+                noise = torch.randn(h.shape[0], run_cfg.model.noise_dim, device=device)
+                t_hat = generator(entity_final[h], relation_emb(r), context, noise)
+
+                pos_score = torch.sum(t_hat * entity_final[t], dim=-1)
+                neg_score = torch.sum(t_hat.unsqueeze(1) * entity_final[negatives], dim=-1).mean(dim=1)
+                loss = torch.relu(1.0 - pos_score + neg_score).mean()
+
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(all_params, run_cfg.training.grad_clip)
@@ -464,62 +463,67 @@ def run_training(config: Dict, output_dir: Path) -> None:
         losses = []
         for batch in loader:
             h, r, t = [x.to(device) for x in batch]
-            entity_sem = entity_emb.embedding.weight
 
-            with torch.autocast(device_type='cuda', dtype=torch.float16):
-                if run_cfg.model.use_rgcn:
-                    entity_struct = encoder(entity_sem, edge_index, edge_type)
-                else:
-                    entity_struct = encoder(entity_sem, relation_emb.embedding.weight, edge_index, edge_type)
+            # Pre-compute CPU/numpy operations outside autocast
+            h_ids = h.cpu().detach().numpy().astype(int)
+            r_ids = r.cpu().detach().numpy().astype(int)
+            t_ids = t.cpu().detach().numpy().astype(int)
+            negatives = sampler.sample(list(zip(h_ids, r_ids, t_ids)), num_negatives=10).to(device)
 
-                entity_final = fusion(entity_sem, entity_struct)
-
-                context, _ = build_context(
-                    attention=attention,
-                    h=h,
-                    r_id=r,
-                    r_emb=relation_emb(r),
-                    neighbor_cache=neighbor_cache,
-                    entity_emb=entity_final,
-                    neighbor_dropout=run_cfg.training.neighbor_dropout,
-                    leave_one_out=run_cfg.training.leave_one_out,
-                    true_t=t,
-                )
-
-                for _ in range(run_cfg.training.gan_k):
+            # --- Discriminator update (gan_k steps) ---
+            for _ in range(run_cfg.training.gan_k):
+                optimizer.zero_grad(set_to_none=True)
+                with torch.autocast(device_type='cuda', dtype=torch.float16):
+                    entity_sem = entity_emb.embedding.weight
+                    if run_cfg.model.use_rgcn:
+                        entity_struct = encoder(entity_sem, edge_index, edge_type)
+                    else:
+                        entity_struct = encoder(entity_sem, relation_emb.embedding.weight, edge_index, edge_type)
+                    entity_final = fusion(entity_sem, entity_struct)
+                    context, _ = build_context(
+                        attention=attention, h=h, r_id=r, r_emb=relation_emb(r),
+                        neighbor_cache=neighbor_cache, entity_emb=entity_final,
+                        neighbor_dropout=run_cfg.training.neighbor_dropout,
+                        leave_one_out=run_cfg.training.leave_one_out, true_t=t,
+                    )
                     noise = torch.randn(h.shape[0], run_cfg.model.noise_dim, device=device)
                     t_hat = generator(entity_final[h], relation_emb(r), context, noise)
                     real_logits = discriminator(entity_final[h], relation_emb(r), entity_final[t], context)
                     fake_logits = discriminator(entity_final[h], relation_emb(r), t_hat.detach(), context)
-
                     d_loss = (
                         torch.nn.functional.binary_cross_entropy_with_logits(real_logits, torch.ones_like(real_logits) * 0.9)
                         + torch.nn.functional.binary_cross_entropy_with_logits(fake_logits, torch.zeros_like(fake_logits))
                     )
+                scaler.scale(d_loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(all_params, run_cfg.training.grad_clip)
+                scaler.step(optimizer)
+                scaler.update()
 
-                    optimizer.zero_grad(set_to_none=True)
-                    scaler.scale(d_loss).backward()
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(all_params, run_cfg.training.grad_clip)
-                    scaler.step(optimizer)
-                    scaler.update()
-
+            # --- Generator update ---
+            optimizer.zero_grad(set_to_none=True)
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
+                entity_sem = entity_emb.embedding.weight
+                if run_cfg.model.use_rgcn:
+                    entity_struct = encoder(entity_sem, edge_index, edge_type)
+                else:
+                    entity_struct = encoder(entity_sem, relation_emb.embedding.weight, edge_index, edge_type)
+                entity_final = fusion(entity_sem, entity_struct)
+                context, _ = build_context(
+                    attention=attention, h=h, r_id=r, r_emb=relation_emb(r),
+                    neighbor_cache=neighbor_cache, entity_emb=entity_final,
+                    neighbor_dropout=run_cfg.training.neighbor_dropout,
+                    leave_one_out=run_cfg.training.leave_one_out, true_t=t,
+                )
                 noise = torch.randn(h.shape[0], run_cfg.model.noise_dim, device=device)
                 t_hat = generator(entity_final[h], relation_emb(r), context, noise)
                 fake_logits = discriminator(entity_final[h], relation_emb(r), t_hat, context)
                 adv_loss = torch.nn.functional.binary_cross_entropy_with_logits(fake_logits, torch.ones_like(fake_logits))
-
-                h_ids = h.cpu().detach().numpy().astype(int)
-                r_ids = r.cpu().detach().numpy().astype(int)
-                t_ids = t.cpu().detach().numpy().astype(int)
-                negatives = sampler.sample(list(zip(h_ids, r_ids, t_ids)), num_negatives=10).to(device)
                 pos_score = torch.sum(t_hat * entity_final[t], dim=-1)
                 neg_score = torch.sum(t_hat.unsqueeze(1) * entity_final[negatives], dim=-1).mean(dim=1)
                 retrieval_loss = torch.relu(1.0 - pos_score + neg_score).mean()
-
                 loss = retrieval_loss + run_cfg.training.lambda_adv * adv_loss
 
-            optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(all_params, run_cfg.training.grad_clip)
