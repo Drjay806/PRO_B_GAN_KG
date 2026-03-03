@@ -34,22 +34,23 @@ def compute_global_epochs(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Tup
 
 
 def plot_mrr_hero(df: pd.DataFrame, spans: Dict[str, Tuple[int, int]], out_path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(10, 5))
+    fig, ax = plt.subplots(figsize=(11, 6))
 
     # Phase shading
     for phase, (start, end) in spans.items():
         color = PHASE_COLORS.get(phase, "#f0f0f0")
         ax.axvspan(start - 0.5, end + 0.5, color=color, alpha=0.3, label=phase.capitalize())
         ax.text((start + end) / 2, ax.get_ylim()[1] if ax.lines else 0.05, phase.capitalize(),
-                ha="center", va="bottom", fontsize=10, color="#444")
+            ha="center", va="bottom", fontsize=11, color="#444")
 
     # MRR curve
     ax.plot(df["global_epoch"], df["mrr"], color="#1f77b4", linewidth=2.2, marker="o", markersize=4, label="MRR")
 
     # Titles and labels
-    ax.set_title("MRR Convergence (PoC)")
-    ax.set_xlabel("Epoch (global)")
-    ax.set_ylabel("Filtered MRR")
+    ax.set_title("MRR Convergence (PoC)", fontsize=16, fontweight="bold")
+    ax.set_xlabel("Epoch (global)", fontsize=13)
+    ax.set_ylabel("Filtered MRR", fontsize=13)
+    ax.tick_params(axis="both", labelsize=11)
     ax.set_xlim(df["global_epoch"].min() - 0.5, df["global_epoch"].max() + 0.5)
 
     # Annotations (max two) if spans exist
@@ -58,10 +59,10 @@ def plot_mrr_hero(df: pd.DataFrame, spans: Dict[str, Tuple[int, int]], out_path:
         mid_w = (ws + we) / 2
         y_w = df[df["phase"] == "warmup"]["mrr"].mean()
         ax.annotate("Warmup stabilizes",
-                    xy=(we, df[df["phase"] == "warmup"]["mrr"].iloc[-1]),
-                    xytext=(mid_w, y_w + 0.002),
-                    arrowprops=dict(arrowstyle="->", color="#555"),
-                    fontsize=10, color="#333")
+                xy=(we, df[df["phase"] == "warmup"]["mrr"].iloc[-1]),
+                xytext=(mid_w, y_w + 0.002),
+                arrowprops=dict(arrowstyle="->", color="#555"),
+                fontsize=12, color="#333")
     if "gan" in spans:
         gs, ge = spans["gan"]
         mid_g = (gs + ge) / 2
@@ -70,9 +71,9 @@ def plot_mrr_hero(df: pd.DataFrame, spans: Dict[str, Tuple[int, int]], out_path:
                     xy=(gs, df[df["phase"] == "gan"]["mrr"].iloc[0] if len(df[df["phase"] == "gan"]) > 0 else y_g),
                     xytext=(mid_g, y_g + 0.002),
                     arrowprops=dict(arrowstyle="->", color="#555"),
-                    fontsize=10, color="#333")
+                    fontsize=12, color="#333")
 
-    ax.legend(loc="upper left")
+    ax.legend(loc="upper left", fontsize=11)
     ax.grid(alpha=0.3)
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
