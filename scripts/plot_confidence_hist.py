@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import numpy as np
 
@@ -11,7 +12,7 @@ def _normalize_scores(df: pd.DataFrame, column: str, mode: str, group_cols) -> p
 
     def _softmax(x):
         v = x - x.max()
-        e = pd.np.exp(v)
+        e = np.exp(v)
         return e / e.sum()
 
     def _percentile(x):
