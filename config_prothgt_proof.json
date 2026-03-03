@@ -40,8 +40,8 @@
     "eval_topk": 1000,
     "max_eval_samples": 1500,
     "max_steps_per_epoch": 500,
-    "compgcn_edge_sample_ratio": 0.5,
-    "encoder_refresh_interval": 3,
+    "compgcn_edge_sample_ratio": 0.25,
+    "encoder_refresh_interval": 4,
     "encoder_refresh_sample_ratio": 0.20,
     "resume": true,
     "max_neighbors": 64
