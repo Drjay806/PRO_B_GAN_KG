@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
+import nympy as np
 
 
 def _normalize_scores(df: pd.DataFrame, column: str, mode: str, group_cols) -> pd.Series:
