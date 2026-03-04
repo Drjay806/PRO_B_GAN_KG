@@ -300,12 +300,12 @@ with st.expander("📖 How This Works (Click to expand)", expanded=False):
     """)
 
 st.sidebar.markdown("### Query Settings")
+
+# Load entity and relation metadata (no model loading yet)
 entity2id = {}
 rel2id = {}
 id2entity = {}
 id2rel = {}
-available_relations_per_entity = {}
-entity_popularity = {}
 
 try:
     if (ARTIFACT_DIR / "entity2id.json").exists():
@@ -315,67 +315,24 @@ try:
     if (ARTIFACT_DIR / "rel2id.json").exists():
         rel2id = json.loads((ARTIFACT_DIR / "rel2id.json").read_text())
         id2rel = {v: k for k, v in rel2id.items()}
-    
-    # Load neighbor cache to find available relations per entity
-    if (ARTIFACT_DIR / "neighbors_index.npy").exists():
-        neighbor_cache = None
-        try:
-            from pro_b_gan_kg.data import NeighborCache
-            neighbor_cache = NeighborCache.load(ARTIFACT_DIR / "neighbors_index.npy")
-            # Count neighbors per entity and relation to determine popularity
-            for (h, r) in neighbor_cache.pairs:
-                if h not in entity_popularity:
-                    entity_popularity[h] = 0
-                entity_popularity[h] += len(neighbor_cache.pairs[(h, r)])
-                
-                # Track available relations per entity
-                if h not in available_relations_per_entity:
-                    available_relations_per_entity[h] = set()
-                available_relations_per_entity[h].add(r)
-        except Exception:
-            pass
-
 except Exception as e:
-    st.warning(f"Could not load metadata: {e}")
+    st.sidebar.error(f"Could not load metadata: {e}")
 
-# Get top entities by popularity + all entities as fallback
-top_entities = sorted(entity_popularity.items(), key=lambda x: -x[1])[:10]
-top_entity_ids = [eid for eid, _ in top_entities]
-top_entity_names = [id2entity.get(eid, f"Entity_{eid}") for eid in top_entity_ids]
+# Build entity/relation lists
+all_entities = sorted(id2entity.values()) if id2entity else []
+all_relations = sorted(id2rel.values()) if id2rel else []
 
-if not top_entity_names:
-    top_entity_names = sorted(id2entity.values())[:10]
+# Entity dropdown (always show, even if empty)
+head = st.sidebar.selectbox(
+    "Head Entity",
+    options=all_entities if all_entities else ["(loading...)"],
+    key="entity_select"
+)
 
-all_entities = sorted(id2entity.values())
-all_relations = sorted(id2rel.values())
-
-st.sidebar.markdown("### Query Settings")
-
-# Entity dropdown (show popular ones first, but allow all)
-col1, col2 = st.sidebar.columns([3, 1])
-with col1:
-    head = st.selectbox(
-        "Head Entity",
-        options=all_entities,
-        index=0 if all_entities else None,
-        format_func=lambda x: f"⭐ {x}" if x in top_entity_names else x,
-        key="entity_select"
-    )
-
-# Relation dropdown (filtered based on selected entity)
-h_id = entity2id.get(head, None)
-available_rels = []
-if h_id is not None and h_id in available_relations_per_entity:
-    available_rels = sorted([id2rel[r] for r in available_relations_per_entity[h_id] if r in id2rel])
-
-if not available_rels and all_relations:
-    st.sidebar.warning(f"No relations found for '{head}'. Showing all relations.")
-    available_rels = all_relations
-
+# Relation dropdown (show all for now, filtered if we can load neighbor cache)
 relation = st.sidebar.selectbox(
     "Relation Type",
-    options=available_rels if available_rels else ["(none available)"],
-    index=0 if available_rels else None,
+    options=all_relations if all_relations else ["(loading...)"],
     key="relation_select"
 )
 
