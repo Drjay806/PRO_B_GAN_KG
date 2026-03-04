@@ -435,33 +435,29 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
 
     with st.spinner("Running inference + evidence rollout..."):
         try:
-            results = predict_and_explain(artifacts, selected_entity_name, relation, topk, num_samples)
+            # If filtering by type, get more results to ensure we have enough of that type
+            effective_topk = topk
+            if target_type_filter != "Any Type":
+                effective_topk = min(100, topk * 5)  # Get 5x more results when filtering
+            
+            results = predict_and_explain(artifacts, selected_entity_name, relation, effective_topk, num_samples)
         except Exception as e:
             st.error(f"Prediction failed: {str(e)[:500]}")
             st.stop()
 
     st.markdown(f"### Query: ({selected_entity_name}, {relation}, ?)")
     
-    # Filter results by target type if specified
+    # Filter results by target type from sidebar
     filtered_results = results
     if target_type_filter != "Any Type":
         filtered_results = [r for r in results if r.get("entity_type") == target_type_filter]
+        # Take only top-K of the filtered type
+        filtered_results = filtered_results[:topk]
+    else:
+        # Take only top-K of all types
+        filtered_results = filtered_results[:topk]
     
-    st.markdown(f"*{len(filtered_results)} predictions returned (filtered from {len(results)} total)*")
-    
-    # Allow user to filter results by type after predictions
-    if len(results) > len(filtered_results):
-        all_types = set(r.get("entity_type", "Other") for r in results)
-        st.markdown("**Filter results by type:**")
-        type_cols = st.columns(len(all_types) + 1)
-        for idx, etype in enumerate(sorted(all_types)):
-            with type_cols[idx]:
-                count = len([r for r in results if r.get("entity_type") == etype])
-                if st.button(f"{etype} ({count})", key=f"filter_{etype}"):
-                    filtered_results = [r for r in results if r.get("entity_type") == etype]
-        with type_cols[-1]:
-            if st.button(f"All ({len(results)})", key="filter_all"):
-                filtered_results = results
+    st.markdown(f"**{len(filtered_results)} {target_type_filter if target_type_filter != 'Any Type' else ''} predictions returned**")
 
     for r in filtered_results:
         conf_color = "#22c55e" if r["confidence"] > 90 else "#eab308" if r["confidence"] > 70 else "#ef4444"
