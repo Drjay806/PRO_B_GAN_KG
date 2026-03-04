@@ -54,5 +54,20 @@
   },
   "semantic": {
     "embeddings_dir": "/content/drive/MyDrive/kg_data/raw/prothgt/for_the_model/embeddings"
+  },
+  "rl": {
+    "enabled": true,
+    "max_epochs": 10,
+    "patience": 5,
+    "lr": 0.0001,
+    "budget": 3,
+    "gamma": 0.99,
+    "entropy_coef": 0.01,
+    "baseline_decay": 0.95,
+    "batch_size": 256,
+    "hub_penalty": 0.1,
+    "proximity_bonus": 0.1,
+    "max_triples_per_epoch": 10000,
+    "policy_hidden": 0
   }
 }

@@ -64,6 +64,23 @@ class SamplingConfig:
 
 
 @dataclass
+class RLConfig:
+    enabled: bool = False
+    max_epochs: int = 10
+    patience: int = 5
+    lr: float = 1e-4
+    budget: int = 3
+    gamma: float = 0.99
+    entropy_coef: float = 0.01
+    baseline_decay: float = 0.95
+    batch_size: int = 256
+    hub_penalty: float = 0.1
+    proximity_bonus: float = 0.1
+    max_triples_per_epoch: int = 10000
+    policy_hidden: int = 0
+
+
+@dataclass
 class OptionalConfig:
     use_rl_evidence: bool = False
     use_patch_reranker: bool = False
@@ -83,6 +100,7 @@ class RunConfig:
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     optional: OptionalConfig = field(default_factory=OptionalConfig)
     semantic: SemanticConfig = field(default_factory=SemanticConfig)
+    rl: RLConfig = field(default_factory=RLConfig)
 
     @staticmethod
     def from_dict(cfg: Dict[str, Any]) -> "RunConfig":
@@ -92,6 +110,7 @@ class RunConfig:
         sampling = SamplingConfig(**cfg.get("sampling", {}))
         optional = OptionalConfig(**cfg.get("optional", {}))
         semantic = SemanticConfig(**cfg.get("semantic", {}))
+        rl = RLConfig(**cfg.get("rl", {}))
         run = RunConfig(
             data=data,
             model=model,
@@ -99,6 +118,7 @@ class RunConfig:
             sampling=sampling,
             optional=optional,
             semantic=semantic,
+            rl=rl,
         )
         run.validate()
         return run

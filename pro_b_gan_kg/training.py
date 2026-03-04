@@ -18,6 +18,7 @@ from .embeddings import EntityEmbedding, RelationEmbedding, distmult_score
 from .fusion import FusionConcat, FusionGate
 from .metrics import ranking_metrics
 from .retrieval import FaissRetriever
+from .rl_evidence import EvidencePolicy, train_evidence_policy
 from .rgcn import RGCN
 from .sampler import NegativeSampler
 from .utils import assert_finite, get_device, save_json, set_seed, setup_logging
@@ -439,7 +440,12 @@ def run_training(config: Dict, output_dir: Path) -> None:
         resume_phase = saved["phase"]
         resume_epoch = saved["epoch"] + 1   # next epoch after the last completed one
         best_mrr = saved["best_mrr"]
-        ckpt_path = output_dir / ("best_model.pt" if resume_phase == "gan" else "warmup_best.pt")
+        if resume_phase == "rl":
+            ckpt_path = output_dir / "best_model.pt"
+        elif resume_phase == "gan":
+            ckpt_path = output_dir / "best_model.pt"
+        else:
+            ckpt_path = output_dir / "warmup_best.pt"
         if ckpt_path.exists():
             ckpt = torch.load(ckpt_path, map_location=device)
             entity_emb.load_state_dict(ckpt["entity_emb"])
@@ -575,7 +581,7 @@ def run_training(config: Dict, output_dir: Path) -> None:
             logger.info("Resuming warmup from epoch %d", warmup_start + 1)
     else:
         warmup_start = run_cfg.training.max_epochs_warmup  # skip entirely
-        logger.info("Warmup already complete, skipping to GAN phase")
+        logger.info("Warmup already complete, skipping to next phase")
 
     for epoch in range(warmup_start, run_cfg.training.max_epochs_warmup):
         entity_struct_cached = _refresh_encoder(epoch)
@@ -671,7 +677,10 @@ def run_training(config: Dict, output_dir: Path) -> None:
     best_state = None
     logger.info("Starting adversarial training")
     gan_start = resume_epoch if resume_phase == "gan" else 0
-    if gan_start > 0:
+    if resume_phase == "rl":
+        gan_start = run_cfg.training.max_epochs_gan  # skip GAN entirely
+        logger.info("GAN already complete, skipping to RL phase")
+    elif gan_start > 0:
         logger.info("Resuming GAN from epoch %d", gan_start + 1)
     for epoch in range(gan_start, run_cfg.training.max_epochs_gan):
         entity_struct_cached = _refresh_encoder(epoch)
@@ -779,12 +788,109 @@ def run_training(config: Dict, output_dir: Path) -> None:
 
     if best_state:
         torch.save(best_state, output_dir / "best_model.pt")
-        # Restore best weights so FAISS index and final embeddings reflect peak performance
         entity_emb.load_state_dict(best_state["entity_emb"])
         relation_emb.load_state_dict(best_state["relation_emb"])
         encoder.load_state_dict(best_state["encoder"])
         fusion.load_state_dict(best_state["fusion"])
         logger.info("Restored best GAN checkpoint (mrr %.4f) for final artifact generation", best_mrr)
+
+    # ── Phase 4: RL Evidence Policy Training ─────────────────────────────────
+    evidence_policy = None
+    if run_cfg.rl.enabled:
+        logger.info("Starting RL evidence policy training (%d epochs)...", run_cfg.rl.max_epochs)
+
+        policy_hidden = run_cfg.rl.policy_hidden if run_cfg.rl.policy_hidden > 0 else run_cfg.model.embedding_dim
+        evidence_policy = EvidencePolicy(
+            dim=run_cfg.model.embedding_dim,
+            hidden=policy_hidden,
+        ).to(device)
+
+        rl_optimizer = torch.optim.Adam(
+            evidence_policy.parameters(),
+            lr=run_cfg.rl.lr,
+            weight_decay=1e-5,
+        )
+
+        entity_sem = entity_emb.embedding.weight
+        with torch.no_grad():
+            if run_cfg.model.use_rgcn:
+                entity_struct = encoder(entity_sem, edge_index, edge_type)
+            else:
+                entity_struct = encoder(entity_sem, relation_emb.embedding.weight, edge_index, edge_type)
+            entity_final_rl = fusion(entity_sem, entity_struct).detach()
+
+        rl_triples = id_triples.train
+        if run_cfg.rl.max_triples_per_epoch > 0 and len(rl_triples) > run_cfg.rl.max_triples_per_epoch:
+            import random
+            rl_triples = random.sample(rl_triples, run_cfg.rl.max_triples_per_epoch)
+            logger.info("  RL: sampled %d triples per epoch", len(rl_triples))
+
+        rl_start = 0
+        best_rl_hit_rate = -1.0
+        rl_patience_counter = 0
+
+        if run_cfg.training.resume and state_path.exists():
+            saved = json.loads(state_path.read_text())
+            if saved.get("phase") == "rl":
+                rl_start = saved["epoch"] + 1
+                best_rl_hit_rate = saved.get("best_rl_hit_rate", -1.0)
+                rl_ckpt_path = output_dir / "rl_policy.pt"
+                if rl_ckpt_path.exists():
+                    evidence_policy.load_state_dict(torch.load(rl_ckpt_path, map_location=device))
+                    logger.info("Resumed RL from epoch %d (hit_rate=%.4f)", rl_start + 1, best_rl_hit_rate)
+
+        for rl_epoch in range(rl_start, run_cfg.rl.max_epochs):
+            rl_metrics = train_evidence_policy(
+                policy=evidence_policy,
+                entity_emb=entity_final_rl,
+                neighbors=neighbor_cache.pairs,
+                train_triples=rl_triples,
+                optimizer=rl_optimizer,
+                budget=run_cfg.rl.budget,
+                gamma=run_cfg.rl.gamma,
+                entropy_coef=run_cfg.rl.entropy_coef,
+                baseline_decay=run_cfg.rl.baseline_decay,
+                batch_size=run_cfg.rl.batch_size,
+                hub_penalty=run_cfg.rl.hub_penalty,
+                proximity_bonus=run_cfg.rl.proximity_bonus,
+                logger=logger,
+            )
+
+            logger.info(
+                "[RL %d/%d] loss=%.4f  avg_reward=%.4f  hit_rate=%.3f",
+                rl_epoch + 1, run_cfg.rl.max_epochs,
+                rl_metrics["loss"], rl_metrics["avg_reward"], rl_metrics["hit_rate"],
+            )
+
+            _log_metrics_csv(
+                "rl", rl_epoch + 1, rl_metrics["loss"],
+                {"mrr": rl_metrics["hit_rate"], "hits@1": rl_metrics["hit_rate"],
+                 "hits@3": rl_metrics["avg_reward"], "hits@10": rl_metrics["avg_reward"]},
+            )
+
+            if rl_metrics["hit_rate"] > best_rl_hit_rate:
+                best_rl_hit_rate = rl_metrics["hit_rate"]
+                torch.save(evidence_policy.state_dict(), output_dir / "rl_policy.pt")
+                rl_patience_counter = 0
+                logger.info("  New best RL hit_rate: %.4f — saved rl_policy.pt", best_rl_hit_rate)
+            else:
+                rl_patience_counter += 1
+                if rl_patience_counter >= run_cfg.rl.patience:
+                    logger.info("  RL early stopping at epoch %d (patience=%d)", rl_epoch + 1, run_cfg.rl.patience)
+                    break
+
+            _save_training_state("rl", rl_epoch, best_mrr)
+            state = json.loads(state_path.read_text())
+            state["best_rl_hit_rate"] = best_rl_hit_rate
+            state_path.write_text(json.dumps(state))
+
+        rl_ckpt_path = output_dir / "rl_policy.pt"
+        if rl_ckpt_path.exists():
+            evidence_policy.load_state_dict(torch.load(rl_ckpt_path, map_location=device))
+            logger.info("Restored best RL policy (hit_rate=%.4f)", best_rl_hit_rate)
+
+        logger.info("RL evidence policy training complete")
+    # ─────────────────────────────────────────────────────────────────────────
 
     logger.info("Building and saving FAISS index")
     entity_sem = entity_emb.embedding.weight

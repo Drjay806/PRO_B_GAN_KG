@@ -9,6 +9,7 @@ import torch
 
 from pro_b_gan_kg.explainability import explain_prediction, format_explanation_text
 from pro_b_gan_kg.inference import load_inference_artifacts
+from pro_b_gan_kg.rl_evidence import EvidencePolicy
 from pro_b_gan_kg.utils import get_device, load_json
 
 
@@ -97,6 +98,18 @@ def main():
     print(f"\nExplaining query: ({id2entity[h_id]}, {id2rel[r_id]}, ?)")
     print("=" * 60)
     
+    evidence_policy = None
+    rl_path = checkpoint_dir / "rl_policy.pt"
+    if rl_path.exists():
+        config = load_json(checkpoint_dir / "metrics.json")["config"]
+        dim = config["model"]["embedding_dim"]
+        rl_cfg = config.get("rl", {})
+        policy_hidden = rl_cfg.get("policy_hidden", 0) or dim
+        evidence_policy = EvidencePolicy(dim=dim, hidden=policy_hidden).to(device)
+        evidence_policy.load_state_dict(torch.load(rl_path, map_location=device))
+        evidence_policy.eval()
+        print("Loaded RL evidence policy")
+
     with torch.no_grad():
         explanation = explain_prediction(
             h_id=h_id,
@@ -112,7 +125,7 @@ def main():
             id2rel=id2rel,
             topk=args.topk,
             num_samples=10,
-            evidence_policy=None,
+            evidence_policy=evidence_policy,
             evidence_budget=3,
         )
     
