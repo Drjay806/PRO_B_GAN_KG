@@ -429,35 +429,53 @@ entity2id, rel2id, id2entity, id2rel, available_relations_per_entity = load_and_
 entity_metadata = load_entity_metadata()
 
 
-def build_head_entity_options(entity2id_map, metadata_map):
-    allowed_types = ["Protein", "Drug", "Compound", "Pathway", "kegg_Pathway"]
+def _normalize_head_type(entity_key, node_type):
+    node_type = (node_type or "").strip()
+    if node_type in {"Pathway", "kegg_Pathway"}:
+        return "Pathway"
+    if node_type in {"Drug", "Compound"}:
+        return "Drug/Compound"
+    if node_type == "Protein":
+        return "Protein"
+
+    key = (entity_key or "").upper()
+    if key.startswith("DB") or key.startswith("CHEMBL"):
+        return "Drug/Compound"
+    if key.startswith("R-HSA") or key.startswith("KEGG") or key.startswith("REACTOME"):
+        return "Pathway"
+    if len(key) >= 6 and key[0] in {"P", "Q", "A", "O"}:
+        return "Protein"
+    return "Other"
+
+
+def build_head_entity_options(entity2id_map, metadata_map, available_rel_map):
     per_type_cap = {
-        "Protein": 8,
-        "Drug": 8,
-        "Compound": 8,
-        "Pathway": 8,
-        "kegg_Pathway": 6,
+        "Protein": 12,
+        "Drug/Compound": 12,
+        "Pathway": 12,
     }
     counts = {k: 0 for k in per_type_cap}
     options = []
 
-    for node_id, meta in metadata_map.items():
-        if node_id not in entity2id_map:
-            continue
-        node_type = meta.get("node_type", "")
-        if node_type not in allowed_types:
-            continue
-        if counts.get(node_type, 0) >= per_type_cap.get(node_type, 0):
+    for entity_key, entity_id in entity2id_map.items():
+        if entity_id not in available_rel_map:
             continue
 
-        display_name = meta.get("display_name") or node_id
-        label = f"{display_name} [{node_type}] — {node_id}"
+        meta = metadata_map.get(entity_key, {})
+        normalized_type = _normalize_head_type(entity_key, meta.get("node_type"))
+        if normalized_type not in per_type_cap:
+            continue
+        if counts[normalized_type] >= per_type_cap[normalized_type]:
+            continue
+
+        display_name = (meta.get("display_name") or entity_key).strip()
+        label = f"{display_name} [{normalized_type}] — {entity_key}"
         options.append({
             "label": label,
-            "entity": node_id,
-            "type": "Pathway" if node_type == "kegg_Pathway" else node_type,
+            "entity": entity_key,
+            "type": normalized_type,
         })
-        counts[node_type] = counts.get(node_type, 0) + 1
+        counts[normalized_type] += 1
 
         if all(counts[t] >= per_type_cap[t] for t in per_type_cap):
             break
@@ -470,8 +488,8 @@ def build_head_entity_options(entity2id_map, metadata_map):
     return options
 
 
-head_entity_options = build_head_entity_options(entity2id, entity_metadata)
-head_categories = ["All", "Protein", "Drug", "Compound", "Pathway"]
+head_entity_options = build_head_entity_options(entity2id, entity_metadata, available_relations_per_entity)
+head_categories = ["All", "Protein", "Drug/Compound", "Pathway"]
 selected_head_category = st.sidebar.selectbox(
     "Head Entity Category",
     options=head_categories,
