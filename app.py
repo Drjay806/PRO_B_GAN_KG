@@ -675,14 +675,14 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
     st.markdown("---")
     st.markdown(
         "<div style='text-align:center; color:#94a3b8; font-size:13px;'>"
-        "PRO-B GAN KG"
+        "PROT-B-GAN KGC"
         "</div>",
         unsafe_allow_html=True,
     )
 else:
     st.info(
         """
-        **Welcome to PRO-B GAN KG!**
+        **Welcome to PROT-B-GAN KG!**
         
         Select an entity and relation, then click **Predict** to find likely linked entities.
         """
