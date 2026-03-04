@@ -216,7 +216,8 @@ def predict_and_explain(artifacts, head_name, relation_name, topk=10, num_sample
 
         results.append({
             "rank": rank,
-            "entity": id2entity.get(cand_id, str(cand_id)),
+            "entity_name": id2entity.get(cand_id, str(cand_id)),
+            "entity_id": cand_id,
             "prediction_score": round(avg_score, 4),
             "confidence": disc_pct,
             "evidence": evidence if evidence else ["No path found (may be novel prediction)"],
@@ -397,33 +398,56 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
 
     for r in results:
         conf_color = "#22c55e" if r["confidence"] > 90 else "#eab308" if r["confidence"] > 70 else "#ef4444"
+        
+        # Create result card with name prominent, ID secondary
         with st.expander(
-            f"**Rank {r['rank']}:** {r['entity']}  —  Confidence: {r['confidence']}%",
+            f"**Rank {r['rank']}:** {r['entity_name']} (ID: {r['entity_id']})  —  Confidence: {r['confidence']}%",
             expanded=(r["rank"] <= 3),
         ):
-            col1, col2 = st.columns(2)
+            # Header with name and confidence
+            col1, col2, col3 = st.columns([2, 1, 1])
             with col1:
+                st.markdown(f"### {r['entity_name']}")
+                st.caption(f"Entity ID: `{r['entity_id']}`")
+            with col2:
                 st.metric("Prediction Score", r["prediction_score"], 
                          help="Similarity between generated candidate and context (0-1 scale)")
-            with col2:
+            with col3:
                 st.markdown(
                     f"<div style='font-size:28px; font-weight:bold; color:{conf_color}; text-align:center;'>"
                     f"{r['confidence']}%</div>"
                     f"<div style='text-align:center; font-size:12px; color:{conf_color};'>Confidence</div>",
                     unsafe_allow_html=True,
                 )
-
-            st.markdown("**Evidence Path:**")
-            if r["evidence"]:
-                for step in r["evidence"]:
-                    st.code(step, language=None)
-            else:
-                st.info("No evidence path found")
-
-            if r["attention_neighbors"]:
-                st.markdown("**Top Neighbors:**")
-                for n in r["attention_neighbors"]:
-                    st.markdown(f"- `{n['entity']}`: {n['weight']}")
+            
+            st.divider()
+            
+            # Details tabs
+            tab1, tab2, tab3 = st.tabs(["🔗 Evidence", "👥 Context", "📊 Details"])
+            
+            with tab1:
+                if r["evidence"]:
+                    st.markdown("**Evidence Path (RL-discovered):"")
+                    for step in r["evidence"]:
+                        st.code(step, language=None)
+                else:
+                    st.info("No evidence path found - may be a novel prediction")
+            
+            with tab2:
+                if r["attention_neighbors"]:
+                    st.markdown("**Top Context Entities (from attention):"")
+                    for n in r["attention_neighbors"]:
+                        st.markdown(f"- **{n['entity']}** (attention weight: {n['weight']})")
+                else:
+                    st.info("No context entities found")
+            
+            with tab3:
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.metric("Prediction Score", f"{r['prediction_score']:.4f}")
+                with col_b:
+                    st.metric("Confidence %", f"{r['confidence']}%")
+                st.caption(f"Rank: {r['rank']} of {len(results)}")
 
 
     st.markdown("---")
