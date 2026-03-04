@@ -299,40 +299,56 @@ with st.expander("📖 How This Works (Click to expand)", expanded=False):
       - Sorted by attention weight (importance)
     """)
 
+@st.cache_resource
+def load_metadata():
+    """Load entity and relation metadata from artifact JSON files."""
+    entity2id = {}
+    rel2id = {}
+    id2entity = {}
+    id2rel = {}
+    
+    try:
+        # Download artifacts if missing
+        ensure_artifacts()
+        
+        if (ARTIFACT_DIR / "entity2id.json").exists():
+            entity2id = json.loads((ARTIFACT_DIR / "entity2id.json").read_text())
+            id2entity = {v: k for k, v in entity2id.items()}
+        
+        if (ARTIFACT_DIR / "rel2id.json").exists():
+            rel2id = json.loads((ARTIFACT_DIR / "rel2id.json").read_text())
+            id2rel = {v: k for k, v in rel2id.items()}
+    except Exception as e:
+        st.sidebar.error(f"Could not load metadata: {e}")
+    
+    return entity2id, rel2id, id2entity, id2rel
+
+
 st.sidebar.markdown("### Query Settings")
 
-# Load entity and relation metadata (no model loading yet)
-entity2id = {}
-rel2id = {}
-id2entity = {}
-id2rel = {}
-
-try:
-    if (ARTIFACT_DIR / "entity2id.json").exists():
-        entity2id = json.loads((ARTIFACT_DIR / "entity2id.json").read_text())
-        id2entity = {v: k for k, v in entity2id.items()}
-    
-    if (ARTIFACT_DIR / "rel2id.json").exists():
-        rel2id = json.loads((ARTIFACT_DIR / "rel2id.json").read_text())
-        id2rel = {v: k for k, v in rel2id.items()}
-except Exception as e:
-    st.sidebar.error(f"Could not load metadata: {e}")
+with st.spinner("Loading entity and relation data..."):
+    entity2id, rel2id, id2entity, id2rel = load_metadata()
 
 # Build entity/relation lists
 all_entities = sorted(id2entity.values()) if id2entity else []
 all_relations = sorted(id2rel.values()) if id2rel else []
 
+if not all_entities:
+    st.sidebar.warning("No entities loaded. This may be the first visit—please wait a moment and refresh.")
+if not all_relations:
+    st.sidebar.warning("No relations loaded. This may be the first visit—please wait a moment and refresh.")
+
 # Entity dropdown (always show, even if empty)
 head = st.sidebar.selectbox(
     "Head Entity",
-    options=all_entities if all_entities else ["(loading...)"],
+    options=all_entities if all_entities else ["No entities available"],
     key="entity_select"
 )
 
 # Relation dropdown (show all for now, filtered if we can load neighbor cache)
 relation = st.sidebar.selectbox(
     "Relation Type",
-    options=all_relations if all_relations else ["(loading...)"],
+    options=all_relations if all_relations else ["No relations available"],
     key="relation_select"
 )
 
