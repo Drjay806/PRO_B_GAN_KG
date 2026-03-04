@@ -237,23 +237,49 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-try:
-    ensure_artifacts()
-    artifacts = load_model()
-except Exception as e:
-    st.error(f"Failed to load model: {e}")
-    st.stop()
-
-entities = sorted(artifacts["entity2id"].keys())
-relations = sorted(artifacts["rel2id"].keys())
+entities = []
+relations = []
+if (ARTIFACT_DIR / "entity2id.json").exists() and (ARTIFACT_DIR / "rel2id.json").exists():
+    try:
+        entities = sorted(json.loads((ARTIFACT_DIR / "entity2id.json").read_text()).keys())
+        relations = sorted(json.loads((ARTIFACT_DIR / "rel2id.json").read_text()).keys())
+    except Exception:
+        entities = []
+        relations = []
 
 st.sidebar.markdown("### Query Settings")
-head = st.sidebar.selectbox("Head Entity", entities, index=0)
-relation = st.sidebar.selectbox("Relation", relations, index=0)
+if entities:
+    head = st.sidebar.selectbox("Head Entity", entities, index=0)
+else:
+    head = st.sidebar.text_input("Head Entity", value="")
+
+if relations:
+    relation = st.sidebar.selectbox("Relation", relations, index=0)
+else:
+    relation = st.sidebar.text_input("Relation", value="")
+
 topk = st.sidebar.slider("Top-K Results", 1, 20, 10)
 num_samples = st.sidebar.slider("Generator Samples", 1, 20, 10)
 
 if st.sidebar.button("🔍 Predict", use_container_width=True):
+    if not head or not relation:
+        st.error("Please provide both a head entity and relation.")
+        st.stop()
+
+    try:
+        ensure_artifacts()
+        artifacts = load_model()
+    except Exception as e:
+        st.error(f"Failed to load model artifacts: {e}")
+        st.stop()
+
+    if head not in artifacts["entity2id"]:
+        st.error("Head entity not found. Please choose a valid entity.")
+        st.stop()
+    if relation not in artifacts["rel2id"]:
+        st.error("Relation not found. Please choose a valid relation.")
+        st.stop()
+
     with st.spinner("Running inference + evidence rollout..."):
         results = predict_and_explain(artifacts, head, relation, topk, num_samples)
 
