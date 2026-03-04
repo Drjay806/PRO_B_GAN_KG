@@ -240,15 +240,92 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Load entity and relation metadata (no model loading yet)
+entity2id = {}
+rel2id = {}
+id2entity = {}
+id2rel = {}
+available_relations_per_entity = {}
+entity_popularity = {}
+
+try:
+    if (ARTIFACT_DIR / "entity2id.json").exists():
+        entity2id = json.loads((ARTIFACT_DIR / "entity2id.json").read_text())
+        id2entity = {v: k for k, v in entity2id.items()}
+    
+    if (ARTIFACT_DIR / "rel2id.json").exists():
+        rel2id = json.loads((ARTIFACT_DIR / "rel2id.json").read_text())
+        id2rel = {v: k for k, v in rel2id.items()}
+    
+    # Load neighbor cache to find available relations per entity
+    if (ARTIFACT_DIR / "neighbors_index.npy").exists():
+        neighbor_cache = None
+        try:
+            from pro_b_gan_kg.data import NeighborCache
+            neighbor_cache = NeighborCache.load(ARTIFACT_DIR / "neighbors_index.npy")
+            # Count neighbors per entity and relation to determine popularity
+            for (h, r) in neighbor_cache.pairs:
+                if h not in entity_popularity:
+                    entity_popularity[h] = 0
+                entity_popularity[h] += len(neighbor_cache.pairs[(h, r)])
+                
+                # Track available relations per entity
+                if h not in available_relations_per_entity:
+                    available_relations_per_entity[h] = set()
+                available_relations_per_entity[h].add(r)
+        except Exception:
+            pass
+
+except Exception as e:
+    st.warning(f"Could not load metadata: {e}")
+
+# Get top entities by popularity + all entities as fallback
+top_entities = sorted(entity_popularity.items(), key=lambda x: -x[1])[:10]
+top_entity_ids = [eid for eid, _ in top_entities]
+top_entity_names = [id2entity.get(eid, f"Entity_{eid}") for eid in top_entity_ids]
+
+if not top_entity_names:
+    top_entity_names = sorted(id2entity.values())[:10]
+
+all_entities = sorted(id2entity.values())
+all_relations = sorted(id2rel.values())
+
 st.sidebar.markdown("### Query Settings")
-head = st.sidebar.text_input("Head Entity Name", value="", placeholder="Enter protein name")
-relation = st.sidebar.text_input("Relation Type", value="", placeholder="Enter relation")
+
+# Entity dropdown (show popular ones first, but allow all)
+col1, col2 = st.sidebar.columns([3, 1])
+with col1:
+    head = st.selectbox(
+        "Head Entity",
+        options=all_entities,
+        index=0 if all_entities else None,
+        format_func=lambda x: f"⭐ {x}" if x in top_entity_names else x,
+        key="entity_select"
+    )
+
+# Relation dropdown (filtered based on selected entity)
+h_id = entity2id.get(head, None)
+available_rels = []
+if h_id is not None and h_id in available_relations_per_entity:
+    available_rels = sorted([id2rel[r] for r in available_relations_per_entity[h_id] if r in id2rel])
+
+if not available_rels and all_relations:
+    st.sidebar.warning(f"No relations found for '{head}'. Showing all relations.")
+    available_rels = all_relations
+
+relation = st.sidebar.selectbox(
+    "Relation Type",
+    options=available_rels if available_rels else ["(none available)"],
+    index=0 if available_rels else None,
+    key="relation_select"
+)
+
 topk = st.sidebar.slider("Top-K Results", 1, 20, 10)
 num_samples = st.sidebar.slider("Generator Samples", 1, 20, 10)
 
 if st.sidebar.button("🔍 Predict", use_container_width=True):
-    if not head or not relation:
-        st.error("Please provide both a head entity and relation.")
+    if not head or head == "(none)" or not relation or relation == "(none available)":
+        st.error("Please select both a head entity and relation.")
         st.stop()
 
     with st.spinner("Loading models and artifacts (first run may take 1-2 minutes)..."):
@@ -260,10 +337,10 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
             st.stop()
 
     if head not in artifacts["entity2id"]:
-        st.error(f"Entity '{head}' not found in knowledge graph. Try a valid protein name.")
+        st.error(f"Entity '{head}' not found in knowledge graph.")
         st.stop()
     if relation not in artifacts["rel2id"]:
-        st.error(f"Relation '{relation}' not found. Valid relations: {', '.join(sorted(artifacts['rel2id'].keys())[:5])}...")
+        st.error(f"Relation '{relation}' not found.")
         st.stop()
 
     with st.spinner("Running inference + evidence rollout..."):
@@ -315,8 +392,8 @@ else:
         
         This is a biomedical knowledge graph link prediction system using CompGCN, GANs, and RL evidence paths.
         
-        1. Enter a **Head Entity** (e.g., a protein name)
-        2. Enter a **Relation** (e.g., the type of relationship)
+        1. Select a **Head Entity** from the dropdown (⭐ marks popular entities)
+        2. Select a **Relation** (filtered to show valid relations for your entity)
         3. Click **Predict** to find likely tail entities
         4. View confidence scores, evidence paths, and attention neighbors
         
