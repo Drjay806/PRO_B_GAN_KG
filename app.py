@@ -10,13 +10,6 @@ from huggingface_hub import snapshot_download
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from pro_b_gan_kg.attention import ContextAttention, batch_neighbors
-from pro_b_gan_kg.data import NeighborCache
-from pro_b_gan_kg.fusion import FusionConcat
-from pro_b_gan_kg.gan import Discriminator, Generator
-from pro_b_gan_kg.retrieval import FaissRetriever
-from pro_b_gan_kg.rl_evidence import EvidencePolicy, run_evidence_rollout
-
 st.set_page_config(page_title="PRO-B GAN KG", page_icon="🧬", layout="wide")
 
 ARTIFACT_DIR = Path("artifacts")
@@ -58,6 +51,13 @@ def ensure_artifacts() -> None:
 
 @st.cache_resource
 def load_model():
+    from pro_b_gan_kg.attention import ContextAttention
+    from pro_b_gan_kg.data import NeighborCache
+    from pro_b_gan_kg.fusion import FusionConcat
+    from pro_b_gan_kg.gan import Discriminator, Generator
+    from pro_b_gan_kg.retrieval import FaissRetriever
+    from pro_b_gan_kg.rl_evidence import EvidencePolicy
+
     device = torch.device("cpu")
 
     config = json.loads((ARTIFACT_DIR / "metrics.json").read_text())["config"]
@@ -130,6 +130,9 @@ def load_model():
 
 
 def predict_and_explain(artifacts, head_name, relation_name, topk=10, num_samples=10):
+    from pro_b_gan_kg.attention import batch_neighbors
+    from pro_b_gan_kg.rl_evidence import run_evidence_rollout
+
     entity2id = artifacts["entity2id"]
     rel2id = artifacts["rel2id"]
     id2entity = artifacts["id2entity"]
