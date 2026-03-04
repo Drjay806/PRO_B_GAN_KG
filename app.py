@@ -427,7 +427,7 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
             
             with tab1:
                 if r["evidence"]:
-                    st.markdown("**Evidence Path (RL-discovered):"")
+                    st.markdown("**Evidence Path (RL-discovered):**")
                     for step in r["evidence"]:
                         st.code(step, language=None)
                 else:
@@ -435,7 +435,7 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
             
             with tab2:
                 if r["attention_neighbors"]:
-                    st.markdown("**Top Context Entities (from attention):"")
+                    st.markdown("**Top Context Entities (from attention):**")
                     for n in r["attention_neighbors"]:
                         st.markdown(f"- **{n['entity']}** (attention weight: {n['weight']})")
                 else:
