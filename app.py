@@ -426,22 +426,85 @@ st.sidebar.markdown("### Query Settings")
 
 # Load all metadata
 entity2id, rel2id, id2entity, id2rel, available_relations_per_entity = load_and_prepare_metadata()
+entity_metadata = load_entity_metadata()
+
+
+def build_head_entity_options(entity2id_map, metadata_map):
+    allowed_types = ["Protein", "Drug", "Compound", "Pathway", "kegg_Pathway"]
+    per_type_cap = {
+        "Protein": 8,
+        "Drug": 8,
+        "Compound": 8,
+        "Pathway": 8,
+        "kegg_Pathway": 6,
+    }
+    counts = {k: 0 for k in per_type_cap}
+    options = []
+
+    for node_id, meta in metadata_map.items():
+        if node_id not in entity2id_map:
+            continue
+        node_type = meta.get("node_type", "")
+        if node_type not in allowed_types:
+            continue
+        if counts.get(node_type, 0) >= per_type_cap.get(node_type, 0):
+            continue
+
+        display_name = meta.get("display_name") or node_id
+        label = f"{display_name} [{node_type}] — {node_id}"
+        options.append({
+            "label": label,
+            "entity": node_id,
+            "type": "Pathway" if node_type == "kegg_Pathway" else node_type,
+        })
+        counts[node_type] = counts.get(node_type, 0) + 1
+
+        if all(counts[t] >= per_type_cap[t] for t in per_type_cap):
+            break
+
+    if not options:
+        for display, entity_key in ENTITY_NAME_MAPPING.items():
+            if entity_key in entity2id_map:
+                options.append({"label": display, "entity": entity_key, "type": "Protein"})
+
+    return options
+
+
+head_entity_options = build_head_entity_options(entity2id, entity_metadata)
+head_categories = ["All", "Protein", "Drug", "Compound", "Pathway"]
+selected_head_category = st.sidebar.selectbox(
+    "Head Entity Category",
+    options=head_categories,
+    index=0,
+    help="Filter head entity choices by type",
+)
+
+if selected_head_category == "All":
+    visible_head_options = head_entity_options
+else:
+    visible_head_options = [opt for opt in head_entity_options if opt["type"] == selected_head_category]
 
 # Human-readable entity dropdown
-entity_display_options = list(ENTITY_NAME_MAPPING.keys())
-selected_entity_display = st.sidebar.selectbox(
-    "Head Entity (Pre-mapped Examples)",
-    options=entity_display_options,
-    index=0 if entity_display_options else None,
-    key="entity_select",
-    help="Select from 10 pre-mapped biomedically relevant entities"
-)
+entity_display_options = [opt["label"] for opt in visible_head_options]
+if entity_display_options:
+    selected_entity_display = st.sidebar.selectbox(
+        "Head Entity",
+        options=entity_display_options,
+        index=0,
+        key="entity_select",
+        help="Includes proteins, drugs/compounds, and pathways"
+    )
+else:
+    selected_entity_display = None
+    st.sidebar.warning("No entities available for this category.")
 
 # Get the actual entity ID from display name
 selected_entity_id = None
 selected_entity_name = None
 if selected_entity_display:
-    selected_entity_name = ENTITY_NAME_MAPPING[selected_entity_display]
+    selected_row = next((opt for opt in visible_head_options if opt["label"] == selected_entity_display), None)
+    if selected_row:
+        selected_entity_name = selected_row["entity"]
     selected_entity_id = entity2id.get(selected_entity_name)
 
 # Get available relations for this entity
