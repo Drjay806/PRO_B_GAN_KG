@@ -62,6 +62,29 @@ def get_entity_type(entity_id: str) -> str:
 
 
 @st.cache_resource
+def load_eval_metrics():
+    """Load training evaluation metrics."""
+    try:
+        ensure_artifacts()
+        metrics_data = json.loads((ARTIFACT_DIR / "metrics.json").read_text())
+        return metrics_data.get("metrics", {})
+    except Exception:
+        return {}
+
+
+@st.cache_resource
+def load_entity_metadata():
+    """Load entity metadata and descriptions."""
+    try:
+        metadata_path = Path("all_metadata.json")
+        if metadata_path.exists():
+            return json.loads(metadata_path.read_text())
+    except Exception:
+        pass
+    return {}
+
+
+@st.cache_resource
 def ensure_artifacts() -> None:
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     missing = [name for name in REQUIRED_ARTIFACTS if not (ARTIFACT_DIR / name).exists()]
@@ -253,6 +276,11 @@ def predict_and_explain(artifacts, head_name, relation_name, topk=10, num_sample
 
         cand_name = id2entity.get(cand_id, str(cand_id))
         cand_type = get_entity_type(cand_name)
+        
+        # Calculate DistMult score (relation embedding dot product)
+        with torch.no_grad():
+            cand_emb_tensor = entity_emb[cand_id]
+            distmult_score = torch.dot(r_emb[0], cand_emb_tensor).item()
 
         results.append({
             "rank": rank,
@@ -260,6 +288,7 @@ def predict_and_explain(artifacts, head_name, relation_name, topk=10, num_sample
             "entity_id": cand_id,
             "entity_type": cand_type,
             "prediction_score": round(avg_score, 4),
+            "distmult_score": round(distmult_score, 4),
             "confidence": disc_pct,
             "evidence": evidence if evidence else ["No path found (may be novel prediction)"],
             "attention_neighbors": attn_neighbors,
@@ -445,7 +474,21 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
             st.error(f"Prediction failed: {str(e)[:500]}")
             st.stop()
 
+    # Load evaluation metrics and entity metadata
+    eval_metrics = load_eval_metrics()
+    entity_metadata = load_entity_metadata()
+    
     st.markdown(f"### Query: ({selected_entity_name}, {relation}, ?)")
+    
+    # Display model evaluation metrics
+    if eval_metrics:
+        st.markdown("#### 📊 Model Evaluation Metrics")
+        cols = st.columns(4)
+        cols[0].metric("MRR", f"{eval_metrics.get('mrr', 0):.4f}")
+        cols[1].metric("HITS@1", f"{eval_metrics.get('hits@1', 0):.4f}")
+        cols[2].metric("HITS@3", f"{eval_metrics.get('hits@3', 0):.4f}")
+        cols[3].metric("HITS@10", f"{eval_metrics.get('hits@10', 0):.4f}")
+        st.divider()
     
     # Filter results by target type from sidebar
     filtered_results = results
@@ -512,11 +555,21 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
                     st.info("No context entities found")
             
             with tab4:
-                col_a, col_b = st.columns(2)
+                st.markdown("**Detailed Metrics:**")
+                col_a, col_b, col_c = st.columns(3)
                 with col_a:
-                    st.metric("Prediction Score", f"{r['prediction_score']:.4f}")
+                    st.metric("Prediction Score", f"{r['prediction_score']:.4f}", help="FAISS + GAN combined score")
                 with col_b:
-                    st.metric("Confidence %", f"{r['confidence']}%")
+                    st.metric("DistMult Score", f"{r['distmult_score']:.4f}", help="Relation embedding dot product")
+                with col_c:
+                    st.metric("Confidence", f"{r['confidence']:.1f}%", help="Discriminator confidence")
+                
+                st.markdown("**Generation Details:**")
+                col_d, col_e = st.columns(2)
+                with col_d:
+                    st.metric("Generation Samples", num_samples, help="Samples used to generate this prediction")
+                with col_e:
+                    st.metric("Rank", r['rank'], help=f"Ranking among top-{topk} predictions")
 
 
 
