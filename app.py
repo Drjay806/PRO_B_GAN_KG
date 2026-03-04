@@ -240,27 +240,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-entities = []
-relations = []
-if (ARTIFACT_DIR / "entity2id.json").exists() and (ARTIFACT_DIR / "rel2id.json").exists():
-    try:
-        entities = sorted(json.loads((ARTIFACT_DIR / "entity2id.json").read_text()).keys())
-        relations = sorted(json.loads((ARTIFACT_DIR / "rel2id.json").read_text()).keys())
-    except Exception:
-        entities = []
-        relations = []
-
 st.sidebar.markdown("### Query Settings")
-if entities:
-    head = st.sidebar.selectbox("Head Entity", entities, index=0)
-else:
-    head = st.sidebar.text_input("Head Entity", value="")
-
-if relations:
-    relation = st.sidebar.selectbox("Relation", relations, index=0)
-else:
-    relation = st.sidebar.text_input("Relation", value="")
-
+head = st.sidebar.text_input("Head Entity Name", value="", placeholder="Enter protein name")
+relation = st.sidebar.text_input("Relation Type", value="", placeholder="Enter relation")
 topk = st.sidebar.slider("Top-K Results", 1, 20, 10)
 num_samples = st.sidebar.slider("Generator Samples", 1, 20, 10)
 
@@ -269,22 +251,27 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
         st.error("Please provide both a head entity and relation.")
         st.stop()
 
-    try:
-        ensure_artifacts()
-        artifacts = load_model()
-    except Exception as e:
-        st.error(f"Failed to load model artifacts: {e}")
-        st.stop()
+    with st.spinner("Loading models and artifacts (first run may take 1-2 minutes)..."):
+        try:
+            ensure_artifacts()
+            artifacts = load_model()
+        except Exception as e:
+            st.error(f"Failed to load model: {str(e)[:500]}")
+            st.stop()
 
     if head not in artifacts["entity2id"]:
-        st.error("Head entity not found. Please choose a valid entity.")
+        st.error(f"Entity '{head}' not found in knowledge graph. Try a valid protein name.")
         st.stop()
     if relation not in artifacts["rel2id"]:
-        st.error("Relation not found. Please choose a valid relation.")
+        st.error(f"Relation '{relation}' not found. Valid relations: {', '.join(sorted(artifacts['rel2id'].keys())[:5])}...")
         st.stop()
 
     with st.spinner("Running inference + evidence rollout..."):
-        results = predict_and_explain(artifacts, head, relation, topk, num_samples)
+        try:
+            results = predict_and_explain(artifacts, head, relation, topk, num_samples)
+        except Exception as e:
+            st.error(f"Prediction failed: {str(e)[:500]}")
+            st.stop()
 
     st.markdown(f"### Query: ({head}, {relation}, ?)")
     st.markdown(f"*{len(results)} predictions returned*")
@@ -322,4 +309,17 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
         unsafe_allow_html=True,
     )
 else:
-    st.info("Select a head entity and relation, then click **Predict** in the sidebar.")
+    st.info(
+        """
+        **Welcome to PRO-B GAN KG!**
+        
+        This is a biomedical knowledge graph link prediction system using CompGCN, GANs, and RL evidence paths.
+        
+        1. Enter a **Head Entity** (e.g., a protein name)
+        2. Enter a **Relation** (e.g., the type of relationship)
+        3. Click **Predict** to find likely tail entities
+        4. View confidence scores, evidence paths, and attention neighbors
+        
+        First prediction may take 1-2 minutes as models are downloaded and loaded.
+        """
+    )
