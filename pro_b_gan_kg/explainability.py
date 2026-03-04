@@ -182,7 +182,8 @@ def format_explanation_text(explanation: ExplanationBundle) -> str:
         lines.append(f"Rank {cand.rank}: {cand.entity_name}")
         lines.append(f"  Prediction score: {cand.prediction_score:.4f}")
         lines.append(f"  DistMult score: {cand.distmult_score:.4f}")
-        lines.append(f"  Discriminator score: {cand.discriminator_score:.4f}")
+        confidence_pct = torch.sigmoid(torch.tensor(cand.discriminator_score)).item() * 100
+        lines.append(f"  Confidence: {confidence_pct:.1f}%")
         lines.append(f"  Node degree: {cand.node_degree}")
         lines.append(f"  Generation diversity: {len(cand.generation_samples)} samples")
         
