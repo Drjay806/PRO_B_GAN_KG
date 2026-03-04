@@ -326,29 +326,46 @@ def load_metadata():
 
 st.sidebar.markdown("### Query Settings")
 
-with st.spinner("Loading entity and relation data..."):
-    entity2id, rel2id, id2entity, id2rel = load_metadata()
+# Hard-coded sample entities for fast demo (no loading time)
+SAMPLE_ENTITIES = [
+    "1.1.1.1",      # Alcohol dehydrogenase
+    "1.1.1.10",     # Alcohol dehydrogenase (NAD)
+    "1.1.1.100",    # D-xylose reductase
+    "1.1.1.101",    # Hydroxymethyl- or formyl-transferase
+    "1.1.1.102",    # Glucose 1-dehydrogenase
+    "1.1.1.103",    # Alcohol dehydrogenase (NADP+)
+    "1.1.1.104",    # Alcohol dehydrogenase (acceptor)
+    "1.1.1.105",    # Alcohol dehydrogenase (NAD(P))
+    "1.1.1.107",    # 3-oxoacyl-CoA reductase
+    "1.1.1.108",    # L-3-hydroxybutyryl-CoA dehydrogenase
+]
 
-# Build entity/relation lists
-all_entities = sorted(id2entity.values()) if id2entity else []
-all_relations = sorted(id2rel.values()) if id2rel else []
+# All relations in the knowledge graph
+ALL_RELATIONS = [
+    "Chembl", "Disease", "Drug", "HPO", "Orthology", "PPI", "Pathway",
+    "domain_function", "function_function", "hpodis", "kegg_dis_drug",
+    "kegg_dis_path", "kegg_dis_prot", "kegg_path_prot", "protein_domain",
+    "protein_ec", "protein_function", "rev_Chembl", "rev_Disease", "rev_Drug",
+    "rev_HPO", "rev_Orthology", "rev_PPI", "rev_Pathway", "rev_domain_function",
+    "rev_function_function", "rev_hpodis", "rev_kegg_dis_drug", "rev_kegg_dis_path",
+    "rev_kegg_dis_prot", "rev_kegg_path_prot", "rev_protein_domain", "rev_protein_ec",
+    "rev_protein_function"
+]
 
-if not all_entities:
-    st.sidebar.warning("No entities loaded. This may be the first visit—please wait a moment and refresh.")
-if not all_relations:
-    st.sidebar.warning("No relations loaded. This may be the first visit—please wait a moment and refresh.")
-
-# Entity dropdown (always show, even if empty)
+# Entity dropdown (hard-coded sample for instant loading)
 head = st.sidebar.selectbox(
-    "Head Entity",
-    options=all_entities if all_entities else ["No entities available"],
+    "Head Entity (Sample)",
+    options=SAMPLE_ENTITIES,
+    index=0,
+    help="Demo entities. For full KB access, train with all 467K entities.",
     key="entity_select"
 )
 
-# Relation dropdown (show all for now, filtered if we can load neighbor cache)
+# Relation dropdown (all relations)
 relation = st.sidebar.selectbox(
     "Relation Type",
-    options=all_relations if all_relations else ["No relations available"],
+    options=ALL_RELATIONS,
+    index=5,  # Default to "PPI" 
     key="relation_select"
 )
 
