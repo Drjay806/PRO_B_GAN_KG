@@ -12,6 +12,20 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 st.set_page_config(page_title="PRO-B GAN KG", page_icon="🧬", layout="wide")
 
+# Human-readable entity mappings (name -> ID)
+ENTITY_NAME_MAPPING = {
+    "TP53 (Tumor Suppressor)": "P04637",
+    "EGFR (Growth Factor Receptor)": "P00533",
+    "BRCA1 (DNA Repair)": "P38398",
+    "MYC (Transcription Factor)": "P01106",
+    "PTEN (Phosphatase)": "P60484",
+    "AKT1 (Protein Kinase)": "P31749",
+    "RAF1 (Serine Kinase)": "P04049",
+    "KRAS (GTPase)": "P01116",
+    "HIF1A (Hypoxia Factor)": "Q16665",
+    "JAK2 (Tyrosine Kinase)": "O60674",
+}
+
 ARTIFACT_DIR = Path("artifacts")
 ARTIFACT_REPO_ID = os.getenv("ARTIFACT_REPO_ID", "drjay806/PRO-B-GAN-KG-artifacts")
 REQUIRED_ARTIFACTS = [
@@ -23,6 +37,28 @@ REQUIRED_ARTIFACTS = [
     "neighbors_index.npy",
     "metrics.json",
 ]
+
+
+def get_entity_type(entity_id: str) -> str:
+    """Detect entity type from ID prefix/pattern."""
+    if not entity_id:
+        return "unknown"
+    # Protein: UniProt ID format (P/Q/A + 5 digits)
+    if entity_id[0] in ['P', 'Q', 'A', 'O'] and len(entity_id) >= 6:
+        return "Protein"
+    # Disease: starts with 'D' or known disease prefixes
+    if entity_id.startswith('D') or entity_id.startswith('MESH'):
+        return "Disease"
+    # Drug/Compound: typically numeric or specific prefixes
+    if entity_id.startswith('CHEMBL') or entity_id.isdigit():
+        return "Drug/Compound"
+    # Gene Ontology
+    if entity_id.startswith('GO:'):
+        return "Gene Ontology"
+    # Pathway
+    if entity_id.startswith('KEGG') or entity_id.startswith('REACTOME'):
+        return "Pathway"
+    return "Other"
 
 
 @st.cache_resource
@@ -47,6 +83,7 @@ def ensure_artifacts() -> None:
             f"Missing required artifacts after download: {still_missing}. "
             f"Check model repo {ARTIFACT_REPO_ID}."
         )
+
 
 
 @st.cache_resource
@@ -214,14 +251,19 @@ def predict_and_explain(artifacts, head_name, relation_name, topk=10, num_sample
             except Exception:
                 pass
 
+        cand_name = id2entity.get(cand_id, str(cand_id))
+        cand_type = get_entity_type(cand_name)
+
         results.append({
             "rank": rank,
-            "entity_name": id2entity.get(cand_id, str(cand_id)),
+            "entity_name": cand_name,
             "entity_id": cand_id,
+            "entity_type": cand_type,
             "prediction_score": round(avg_score, 4),
             "confidence": disc_pct,
             "evidence": evidence if evidence else ["No path found (may be novel prediction)"],
             "attention_neighbors": attn_neighbors,
+            "description": None,  # Can be populated from metadata if available
         })
 
     return results
@@ -281,11 +323,12 @@ st.sidebar.markdown("### Query Settings")
 
 @st.cache_resource
 def load_and_prepare_metadata():
-    """Load entity mappings and prepare dropdown data."""
+    """Load entity mappings, relations, and build neighbor index."""
     entity2id = {}
     rel2id = {}
     id2entity = {}
     id2rel = {}
+    available_relations_per_entity = {}
     
     try:
         ensure_artifacts()
@@ -297,51 +340,82 @@ def load_and_prepare_metadata():
         if (ARTIFACT_DIR / "rel2id.json").exists():
             rel2id = json.loads((ARTIFACT_DIR / "rel2id.json").read_text())
             id2rel = {v: k for k, v in rel2id.items()}
+        
+        # Load neighbor cache to build available relations per entity
+        if (ARTIFACT_DIR / "neighbors_index.npy").exists():
+            try:
+                from pro_b_gan_kg.data import NeighborCache
+                neighbor_cache = NeighborCache.load(ARTIFACT_DIR / "neighbors_index.npy")
+                
+                # Build map of entity -> available relations
+                for (h_id, r_id) in neighbor_cache.pairs.keys():
+                    if h_id not in available_relations_per_entity:
+                        available_relations_per_entity[h_id] = set()
+                    available_relations_per_entity[h_id].add(r_id)
+            except Exception:
+                pass
     
     except Exception as e:
         st.sidebar.error(f"Error loading metadata: {e}")
     
-    return entity2id, rel2id, id2entity, id2rel
+    return entity2id, rel2id, id2entity, id2rel, available_relations_per_entity
 
 
 st.sidebar.markdown("### Query Settings")
 
 # Load all metadata
-entity2id, rel2id, id2entity, id2rel = load_and_prepare_metadata()
+entity2id, rel2id, id2entity, id2rel, available_relations_per_entity = load_and_prepare_metadata()
 
-# Get sample entities for dropdown (use actual entity names, not IDs)
-if entity2id:
-    sample_entities = sorted(list(entity2id.keys()))[:50]  # Take first 50 alphabetically for variety
-else:
-    sample_entities = []
-
-# Entity dropdown - show names directly
-selected_entity_name = st.sidebar.selectbox(
-    "Head Entity",
-    options=sample_entities,
-    index=0 if sample_entities else None,
+# Human-readable entity dropdown
+entity_display_options = list(ENTITY_NAME_MAPPING.keys())
+selected_entity_display = st.sidebar.selectbox(
+    "Head Entity (Pre-mapped Examples)",
+    options=entity_display_options,
+    index=0 if entity_display_options else None,
     key="entity_select",
-    help="Select from sample entities (showing actual names, not IDs)"
-) if sample_entities else None
+    help="Select from 10 pre-mapped biomedically relevant entities"
+)
 
-# Get the ID of selected entity
-selected_entity_id = entity2id.get(selected_entity_name) if selected_entity_name else None
+# Get the actual entity ID from display name
+selected_entity_id = None
+selected_entity_name = None
+if selected_entity_display:
+    selected_entity_name = ENTITY_NAME_MAPPING[selected_entity_display]
+    selected_entity_id = entity2id.get(selected_entity_name)
 
-# Relation dropdown
+# Get available relations for this entity
+available_rels = []
+if selected_entity_id is not None and selected_entity_id in available_relations_per_entity:
+    available_rels = sorted([id2rel[r_id] for r_id in available_relations_per_entity[selected_entity_id] if r_id in id2rel])
+
+# Relation dropdown (dynamically filtered based on head entity)
 relation = st.sidebar.selectbox(
     "Relation Type",
-    options=sorted(rel2id.keys()),
-    index=0 if rel2id else None,
-    key="relation_select"
+    options=available_rels if available_rels else ["(no relations available)"],
+    index=0 if available_rels else None,
+    key="relation_select",
+    help="Shows only relations valid for the selected entity"
 )
+
+# Predict target type (pre-filter results by type)
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Result Filters")
+target_types = ["Any Type", "Protein", "Disease", "Drug/Compound", "Pathway", "Gene Ontology"]
+target_type_filter = st.sidebar.selectbox(
+    "Predict Target Type",
+    options=target_types,
+    index=0,
+    help="Pre-filter results to only show predictions of this type"
+)
+
 
 
 topk = st.sidebar.slider("Top-K Results", 1, 20, 10)
 num_samples = st.sidebar.slider("Generator Samples", 1, 20, 10)
 
 if st.sidebar.button("🔍 Predict", use_container_width=True):
-    if selected_entity_name is None or not relation:
-        st.error("Please select both a head entity and relation.")
+    if selected_entity_name is None or not relation or relation == "(no relations available)":
+        st.error("Please select both a head entity and a valid relation.")
         st.stop()
 
     with st.spinner("Loading models and artifacts (first run may take 1-2 minutes)..."):
@@ -367,25 +441,43 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
             st.stop()
 
     st.markdown(f"### Query: ({selected_entity_name}, {relation}, ?)")
-    st.markdown(f"*{len(results)} predictions returned*")
+    
+    # Filter results by target type if specified
+    filtered_results = results
+    if target_type_filter != "Any Type":
+        filtered_results = [r for r in results if r.get("entity_type") == target_type_filter]
+    
+    st.markdown(f"*{len(filtered_results)} predictions returned (filtered from {len(results)} total)*")
+    
+    # Allow user to filter results by type after predictions
+    if len(results) > len(filtered_results):
+        all_types = set(r.get("entity_type", "Other") for r in results)
+        st.markdown("**Filter results by type:**")
+        type_cols = st.columns(len(all_types) + 1)
+        for idx, etype in enumerate(sorted(all_types)):
+            with type_cols[idx]:
+                count = len([r for r in results if r.get("entity_type") == etype])
+                if st.button(f"{etype} ({count})", key=f"filter_{etype}"):
+                    filtered_results = [r for r in results if r.get("entity_type") == etype]
+        with type_cols[-1]:
+            if st.button(f"All ({len(results)})", key="filter_all"):
+                filtered_results = results
 
-    for r in results:
+    for r in filtered_results:
         conf_color = "#22c55e" if r["confidence"] > 90 else "#eab308" if r["confidence"] > 70 else "#ef4444"
+        entity_type = r.get("entity_type", "Other")
         
-        # Create result card with name prominent, ID secondary
+        # Create result card with name, ID, and type
         with st.expander(
-            f"**Rank {r['rank']}:** {r['entity_name']} (ID: {r['entity_id']})  —  Confidence: {r['confidence']}%",
+            f"**Rank {r['rank']}:** {r['entity_name']} (ID: {r['entity_id']}) [{entity_type}] — Confidence: {r['confidence']}%",
             expanded=(r["rank"] <= 3),
         ):
-            # Header with name and confidence
-            col1, col2, col3 = st.columns([2, 1, 1])
+            # Header with name, type, and confidence
+            col1, col2 = st.columns([2, 1])
             with col1:
                 st.markdown(f"### {r['entity_name']}")
-                st.caption(f"Entity ID: `{r['entity_id']}`")
+                st.caption(f"Entity ID: `{r['entity_id']}` | Type: **{entity_type}**")
             with col2:
-                st.metric("Prediction Score", r["prediction_score"], 
-                         help="Similarity between generated candidate and context (0-1 scale)")
-            with col3:
                 st.markdown(
                     f"<div style='font-size:28px; font-weight:bold; color:{conf_color}; text-align:center;'>"
                     f"{r['confidence']}%</div>"
@@ -396,9 +488,18 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
             st.divider()
             
             # Details tabs
-            tab1, tab2, tab3 = st.tabs(["🔗 Evidence", "👥 Context", "📊 Details"])
+            tab1, tab2, tab3, tab4 = st.tabs(["📋 Metadata", "🔗 Evidence", "👥 Context", "📊 Metrics"])
             
             with tab1:
+                st.markdown("**Entity Information:**")
+                st.write(f"**Type:** {entity_type}")
+                st.write(f"**ID:** {r['entity_id']}")
+                if r.get("description"):
+                    st.write(f"**Description:** {r['description']}")
+                else:
+                    st.info("No description available for this entity")
+            
+            with tab2:
                 if r["evidence"]:
                     st.markdown("**Evidence Path (RL-discovered):**")
                     for step in r["evidence"]:
@@ -406,21 +507,21 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
                 else:
                     st.info("No evidence path found - may be a novel prediction")
             
-            with tab2:
+            with tab3:
                 if r["attention_neighbors"]:
                     st.markdown("**Top Context Entities (from attention):**")
                     for n in r["attention_neighbors"]:
-                        st.markdown(f"- **{n['entity']}** (attention weight: {n['weight']})")
+                        st.markdown(f"- **{n['entity']}** (weight: {n['weight']})")
                 else:
                     st.info("No context entities found")
             
-            with tab3:
+            with tab4:
                 col_a, col_b = st.columns(2)
                 with col_a:
                     st.metric("Prediction Score", f"{r['prediction_score']:.4f}")
                 with col_b:
                     st.metric("Confidence %", f"{r['confidence']}%")
-                st.caption(f"Rank: {r['rank']} of {len(results)}")
+
 
 
     st.markdown("---")
