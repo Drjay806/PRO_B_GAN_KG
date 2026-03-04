@@ -366,7 +366,7 @@ topk = st.sidebar.slider("Top-K Results", 1, 20, 10)
 num_samples = st.sidebar.slider("Generator Samples", 1, 20, 10)
 
 if st.sidebar.button("🔍 Predict", use_container_width=True):
-    if not head or head == "(none)" or not relation or relation == "(none available)":
+    if selected_entity_name is None or relation == "(none available)":
         st.error("Please select both a head entity and relation.")
         st.stop()
 
@@ -378,8 +378,8 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
             st.error(f"Failed to load model: {str(e)[:500]}")
             st.stop()
 
-    if head not in artifacts["entity2id"]:
-        st.error(f"Entity '{head}' not found in knowledge graph.")
+    if selected_entity_name not in artifacts["entity2id"]:
+        st.error(f"Entity '{selected_entity_name}' not found in knowledge graph.")
         st.stop()
     if relation not in artifacts["rel2id"]:
         st.error(f"Relation '{relation}' not found.")
@@ -387,12 +387,12 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
 
     with st.spinner("Running inference + evidence rollout..."):
         try:
-            results = predict_and_explain(artifacts, head, relation, topk, num_samples)
+            results = predict_and_explain(artifacts, selected_entity_name, relation, topk, num_samples)
         except Exception as e:
             st.error(f"Prediction failed: {str(e)[:500]}")
             st.stop()
 
-    st.markdown(f"### Query: ({head}, {relation}, ?)")
+    st.markdown(f"### Query: ({selected_entity_name}, {relation}, ?)")
     st.markdown(f"*{len(results)} predictions returned*")
 
     for r in results:
