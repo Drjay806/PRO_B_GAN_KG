@@ -251,54 +251,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# EXPLANATION SECTION
-with st.expander("📖 How This Works (Click to expand)", expanded=False):
-    st.markdown("""
-    ### System Overview
-    
-    **PRO-B GAN KG** predicts missing links in biomedical knowledge graphs using three complementary techniques:
-    
-    1. **CompGCN (Composition-based Graph Convolutional Network)**
-       - Encodes relational structure in the knowledge graph
-       - Learns semantic embeddings for entities and relations
-       - Captures multi-hop neighborhood context
-    
-    2. **GAN (Generative Adversarial Network)**
-       - **Generator**: Creates candidate tail entities given (head, relation) pair
-       - **Discriminator**: Scores predictions with confidence estimates
-       - Learns to generate realistic knowledge graph completions
-    
-    3. **RL (Reinforcement Learning) Evidence Paths** *(optional)*
-       - Discovers interpretable multi-hop reasoning paths
-       - Explains *why* a prediction is made
-       - Provides transparency through intermediate steps
-    
-    ### Input Parameters
-    
-    - **Head Entity**: The source/subject in the knowledge graph (e.g., a protein)
-    - **Relation**: The type of relationship to query (e.g., "interacts_with", "regulates")
-    - **Top-K Results**: Number of top predictions to return (1-20)
-    - **Generator Samples**: Number of times to run the generator for robustness (1-20)
-    
-    ### Output Metrics Explained
-    
-    For each predicted tail entity:
-    
-    - **Prediction Score** (0-1): Raw similarity score between generated and retrieved candidate. Higher = more similar to generated prototype.
-    
-    - **Confidence %** (0-100%): Discriminator's confidence that this edge should exist in the knowledge graph. 
-      - 🟢 90%+: High confidence
-      - 🟡 70-90%: Medium confidence  
-      - 🔴 <70%: Lower confidence
-    
-    - **Evidence Path**: Multi-hop reasoning chain from head entity to tail through intermediate entities.
-      - Format: `Entity1 --[relation]--> Entity2 --[relation]--> Entity3`
-      - Shows *how* the model reasons about the connection
-    
-    - **Attention Neighbors**: The most relevant neighboring entities the model attended to when making the prediction.
-      - Sorted by attention weight (importance)
-    """)
-
 @st.cache_resource
 def load_metadata():
     """Load entity and relation metadata from artifact JSON files."""
@@ -326,47 +278,88 @@ def load_metadata():
 
 st.sidebar.markdown("### Query Settings")
 
-# Hard-coded sample entities for fast demo (no loading time)
-SAMPLE_ENTITIES = [
-    "1.1.1.1",      # Alcohol dehydrogenase
-    "1.1.1.10",     # Alcohol dehydrogenase (NAD)
-    "1.1.1.100",    # D-xylose reductase
-    "1.1.1.101",    # Hydroxymethyl- or formyl-transferase
-    "1.1.1.102",    # Glucose 1-dehydrogenase
-    "1.1.1.103",    # Alcohol dehydrogenase (NADP+)
-    "1.1.1.104",    # Alcohol dehydrogenase (acceptor)
-    "1.1.1.105",    # Alcohol dehydrogenase (NAD(P))
-    "1.1.1.107",    # 3-oxoacyl-CoA reductase
-    "1.1.1.108",    # L-3-hydroxybutyryl-CoA dehydrogenase
-]
+@st.cache_resource
+def load_and_prepare_metadata():
+    """Load metadata and determine available relations per entity."""
+    entity2id = {}
+    rel2id = {}
+    id2entity = {}
+    id2rel = {}
+    available_relations_per_entity = {}
+    
+    try:
+        ensure_artifacts()
+        
+        if (ARTIFACT_DIR / "entity2id.json").exists():
+            entity2id = json.loads((ARTIFACT_DIR / "entity2id.json").read_text())
+            id2entity = {v: k for k, v in entity2id.items()}
+        
+        if (ARTIFACT_DIR / "rel2id.json").exists():
+            rel2id = json.loads((ARTIFACT_DIR / "rel2id.json").read_text())
+            id2rel = {v: k for k, v in rel2id.items()}
+        
+        # Load neighbor cache to find which relations each entity has
+        if (ARTIFACT_DIR / "neighbors_index.npy").exists():
+            try:
+                from pro_b_gan_kg.data import NeighborCache
+                neighbor_cache = NeighborCache.load(ARTIFACT_DIR / "neighbors_index.npy")
+                
+                # Build map of entity -> available relations
+                for (h_id, r_id) in neighbor_cache.pairs.keys():
+                    if h_id not in available_relations_per_entity:
+                        available_relations_per_entity[h_id] = set()
+                    available_relations_per_entity[h_id].add(r_id)
+            except Exception:
+                pass
+    
+    except Exception as e:
+        st.sidebar.error(f"Error loading metadata: {e}")
+    
+    return entity2id, rel2id, id2entity, id2rel, available_relations_per_entity
 
-# All relations in the knowledge graph
-ALL_RELATIONS = [
-    "Chembl", "Disease", "Drug", "HPO", "Orthology", "PPI", "Pathway",
-    "domain_function", "function_function", "hpodis", "kegg_dis_drug",
-    "kegg_dis_path", "kegg_dis_prot", "kegg_path_prot", "protein_domain",
-    "protein_ec", "protein_function", "rev_Chembl", "rev_Disease", "rev_Drug",
-    "rev_HPO", "rev_Orthology", "rev_PPI", "rev_Pathway", "rev_domain_function",
-    "rev_function_function", "rev_hpodis", "rev_kegg_dis_drug", "rev_kegg_dis_path",
-    "rev_kegg_dis_prot", "rev_kegg_path_prot", "rev_protein_domain", "rev_protein_ec",
-    "rev_protein_function"
-]
 
-# Entity dropdown (hard-coded sample for instant loading)
-head = st.sidebar.selectbox(
-    "Head Entity (Sample)",
-    options=SAMPLE_ENTITIES,
-    index=0,
-    help="Demo entities. For full KB access, train with all 467K entities.",
+st.sidebar.markdown("### Query Settings")
+
+# Load all metadata
+entity2id, rel2id, id2entity, id2rel, available_relations_per_entity = load_and_prepare_metadata()
+
+# Get top 5 entities with most relations available
+entity_relation_counts = {}
+for h_id, relations in available_relations_per_entity.items():
+    if h_id in id2entity:
+        entity_relation_counts[h_id] = len(relations)
+
+top_5_entity_ids = sorted(entity_relation_counts.items(), key=lambda x: -x[1])[:5]
+top_5_entities = [(id2entity[eid], eid) for eid, _ in top_5_entity_ids]
+
+# Display names and internal IDs
+entity_display_names = [name for name, _ in top_5_entities]
+
+# Entity dropdown
+selected_entity_name = st.sidebar.selectbox(
+    "Head Entity",
+    options=entity_display_names,
+    index=0 if entity_display_names else None,
     key="entity_select"
 )
 
-# Relation dropdown (all relations)
+# Get the ID of selected entity
+selected_entity_id = None
+if selected_entity_name:
+    selected_entity_id = entity2id.get(selected_entity_name, None)
+
+# Get available relations for this entity
+available_rels = []
+if selected_entity_id is not None and selected_entity_id in available_relations_per_entity:
+    available_rels = sorted([id2rel[r_id] for r_id in available_relations_per_entity[selected_entity_id] if r_id in id2rel])
+
+# Relation dropdown (filtered to available relations)
 relation = st.sidebar.selectbox(
     "Relation Type",
-    options=ALL_RELATIONS,
-    index=5,  # Default to "PPI" 
-    key="relation_select"
+    options=available_rels if available_rels else ["(none available)"],
+    index=0 if available_rels else None,
+    key="relation_select",
+    help="Only shows relations valid for the selected entity"
 )
 
 topk = st.sidebar.slider("Top-K Results", 1, 20, 10)
@@ -401,20 +394,6 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
 
     st.markdown(f"### Query: ({head}, {relation}, ?)")
     st.markdown(f"*{len(results)} predictions returned*")
-    
-    st.markdown("""
-    ---
-    #### Understanding the Results Below
-    
-    Each prediction includes:
-    - **Prediction Score**: How similar the generated candidate is to the query context
-    - **Confidence**: The discriminator's estimate of edge validity (0-100%)
-    - **Evidence Path**: The reasoning chain (if RL path discovery succeeded)
-    - **Attention Neighbors**: Entities the model focused on during reasoning
-    
-    Remember: These are *candidate* predictions from the model. Validation against real biomedical databases is essential.
-    ---
-    """)
 
     for r in results:
         conf_color = "#22c55e" if r["confidence"] > 90 else "#eab308" if r["confidence"] > 70 else "#ef4444"
@@ -430,33 +409,22 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
                 st.markdown(
                     f"<div style='font-size:28px; font-weight:bold; color:{conf_color}; text-align:center;'>"
                     f"{r['confidence']}%</div>"
-                    f"<div style='text-align:center; font-size:12px; color:{conf_color};'>Discriminator Confidence</div>",
+                    f"<div style='text-align:center; font-size:12px; color:{conf_color};'>Confidence</div>",
                     unsafe_allow_html=True,
                 )
 
-            st.markdown("**📊 Metric Explanations:**")
-            st.markdown(f"""
-            - **Prediction Score ({r['prediction_score']})**: How closely this entity matches the generated prototype from the model. Generated via transformer-based generation + FAISS vector search.
-            
-            - **Confidence ({r['confidence']}%)**: The discriminator network's estimate of whether this link actually belongs in the knowledge graph. Based on adversarial training against real KG patterns.
-            """)
-
-            st.markdown("**🔗 Evidence Path:**")
+            st.markdown("**Evidence Path:**")
             if r["evidence"]:
-                for i, step in enumerate(r["evidence"], 1):
+                for step in r["evidence"]:
                     st.code(step, language=None)
-                st.markdown("*Multi-hop reasoning chain discovered via RL policy*")
             else:
-                st.info("No evidence path found (model may predict novel/unseen patterns)")
+                st.info("No evidence path found")
 
             if r["attention_neighbors"]:
-                st.markdown("**👁️ Top Attention Neighbors** (entities the model focused on):")
+                st.markdown("**Top Neighbors:**")
                 for n in r["attention_neighbors"]:
-                    st.markdown(f"- `{n['entity']}` — attention weight: {n['weight']}")
-            
-            st.markdown("""
-            > **Interpretation**: This prediction means the model believes this entity is a likely completion of the (head, relation, ?) triple based on patterns learned during training.
-            """)
+                    st.markdown(f"- `{n['entity']}`: {n['weight']}")
+
 
     st.markdown("---")
     st.markdown(
@@ -470,21 +438,6 @@ else:
         """
         **Welcome to PRO-B GAN KG!**
         
-        This is a biomedical knowledge graph link prediction system using CompGCN, GANs, and RL evidence paths.
-        
-        **How to use:**
-        1. Select a **Head Entity** from the dropdown (⭐ marks popular entities)
-        2. Select a **Relation** (automatically filtered to show valid relations for your entity)
-        3. Click **Predict** to find likely tail entities
-        
-        **What you'll see:**
-        - **Prediction Score**: How well the entity matches the model's generated prototype
-        - **Confidence %**: The discriminator's estimate of edge validity
-        - **Evidence Paths**: Multi-hop reasoning explaining the prediction
-        - **Attention Neighbors**: Key entities the model focused on
-        
-        **⏱️ Timing**: First prediction may take 1-2 minutes as models download and load. Subsequent predictions are instant.
-        
-        **📖 Need details?** Click "How This Works" above to learn about the system architecture and metric meanings.
+        Select an entity and relation, then click **Predict** to find likely linked entities.
         """
     )
