@@ -240,7 +240,66 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Load entity and relation metadata (no model loading yet)
+# PROOF OF CONCEPT WARNING
+st.markdown(
+    """
+    <div style="background-color:#ff4444; color:white; padding:15px; border-radius:8px; margin-bottom:20px; font-weight:bold;">
+        ⚠️ <strong>PROOF OF CONCEPT</strong><br/>
+        This model has <strong>NOT been fully trained</strong>. Results are for demonstration purposes only and should not be used for actual biomedical or scientific decision-making. This is a prototype to showcase the architecture and methodology.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# EXPLANATION SECTION
+with st.expander("📖 How This Works (Click to expand)", expanded=False):
+    st.markdown("""
+    ### System Overview
+    
+    **PRO-B GAN KG** predicts missing links in biomedical knowledge graphs using three complementary techniques:
+    
+    1. **CompGCN (Composition-based Graph Convolutional Network)**
+       - Encodes relational structure in the knowledge graph
+       - Learns semantic embeddings for entities and relations
+       - Captures multi-hop neighborhood context
+    
+    2. **GAN (Generative Adversarial Network)**
+       - **Generator**: Creates candidate tail entities given (head, relation) pair
+       - **Discriminator**: Scores predictions with confidence estimates
+       - Learns to generate realistic knowledge graph completions
+    
+    3. **RL (Reinforcement Learning) Evidence Paths** *(optional)*
+       - Discovers interpretable multi-hop reasoning paths
+       - Explains *why* a prediction is made
+       - Provides transparency through intermediate steps
+    
+    ### Input Parameters
+    
+    - **Head Entity**: The source/subject in the knowledge graph (e.g., a protein)
+    - **Relation**: The type of relationship to query (e.g., "interacts_with", "regulates")
+    - **Top-K Results**: Number of top predictions to return (1-20)
+    - **Generator Samples**: Number of times to run the generator for robustness (1-20)
+    
+    ### Output Metrics Explained
+    
+    For each predicted tail entity:
+    
+    - **Prediction Score** (0-1): Raw similarity score between generated and retrieved candidate. Higher = more similar to generated prototype.
+    
+    - **Confidence %** (0-100%): Discriminator's confidence that this edge should exist in the knowledge graph. 
+      - 🟢 90%+: High confidence
+      - 🟡 70-90%: Medium confidence  
+      - 🔴 <70%: Lower confidence
+    
+    - **Evidence Path**: Multi-hop reasoning chain from head entity to tail through intermediate entities.
+      - Format: `Entity1 --[relation]--> Entity2 --[relation]--> Entity3`
+      - Shows *how* the model reasons about the connection
+    
+    - **Attention Neighbors**: The most relevant neighboring entities the model attended to when making the prediction.
+      - Sorted by attention weight (importance)
+    """)
+
+st.sidebar.markdown("### Query Settings")
 entity2id = {}
 rel2id = {}
 id2entity = {}
@@ -352,6 +411,20 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
 
     st.markdown(f"### Query: ({head}, {relation}, ?)")
     st.markdown(f"*{len(results)} predictions returned*")
+    
+    st.markdown("""
+    ---
+    #### Understanding the Results Below
+    
+    Each prediction includes:
+    - **Prediction Score**: How similar the generated candidate is to the query context
+    - **Confidence**: The discriminator's estimate of edge validity (0-100%)
+    - **Evidence Path**: The reasoning chain (if RL path discovery succeeded)
+    - **Attention Neighbors**: Entities the model focused on during reasoning
+    
+    Remember: These are *candidate* predictions from the model. Validation against real biomedical databases is essential.
+    ---
+    """)
 
     for r in results:
         conf_color = "#22c55e" if r["confidence"] > 90 else "#eab308" if r["confidence"] > 70 else "#ef4444"
@@ -361,22 +434,39 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
         ):
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("Prediction Score", r["prediction_score"])
+                st.metric("Prediction Score", r["prediction_score"], 
+                         help="Similarity between generated candidate and context (0-1 scale)")
             with col2:
                 st.markdown(
-                    f"<div style='font-size:28px; font-weight:bold; color:{conf_color};'>"
-                    f"{r['confidence']}%</div>",
+                    f"<div style='font-size:28px; font-weight:bold; color:{conf_color}; text-align:center;'>"
+                    f"{r['confidence']}%</div>"
+                    f"<div style='text-align:center; font-size:12px; color:{conf_color};'>Discriminator Confidence</div>",
                     unsafe_allow_html=True,
                 )
 
-            st.markdown("**Evidence Path:**")
-            for step in r["evidence"]:
-                st.code(step, language=None)
+            st.markdown("**📊 Metric Explanations:**")
+            st.markdown(f"""
+            - **Prediction Score ({r['prediction_score']})**: How closely this entity matches the generated prototype from the model. Generated via transformer-based generation + FAISS vector search.
+            
+            - **Confidence ({r['confidence']}%)**: The discriminator network's estimate of whether this link actually belongs in the knowledge graph. Based on adversarial training against real KG patterns.
+            """)
+
+            st.markdown("**🔗 Evidence Path:**")
+            if r["evidence"]:
+                for i, step in enumerate(r["evidence"], 1):
+                    st.code(step, language=None)
+                st.markdown("*Multi-hop reasoning chain discovered via RL policy*")
+            else:
+                st.info("No evidence path found (model may predict novel/unseen patterns)")
 
             if r["attention_neighbors"]:
-                st.markdown("**Top Attention Neighbors:**")
+                st.markdown("**👁️ Top Attention Neighbors** (entities the model focused on):")
                 for n in r["attention_neighbors"]:
-                    st.markdown(f"- `{n['entity']}`: {n['weight']}")
+                    st.markdown(f"- `{n['entity']}` — attention weight: {n['weight']}")
+            
+            st.markdown("""
+            > **Interpretation**: This prediction means the model believes this entity is a likely completion of the (head, relation, ?) triple based on patterns learned during training.
+            """)
 
     st.markdown("---")
     st.markdown(
@@ -392,11 +482,19 @@ else:
         
         This is a biomedical knowledge graph link prediction system using CompGCN, GANs, and RL evidence paths.
         
+        **How to use:**
         1. Select a **Head Entity** from the dropdown (⭐ marks popular entities)
-        2. Select a **Relation** (filtered to show valid relations for your entity)
+        2. Select a **Relation** (automatically filtered to show valid relations for your entity)
         3. Click **Predict** to find likely tail entities
-        4. View confidence scores, evidence paths, and attention neighbors
         
-        First prediction may take 1-2 minutes as models are downloaded and loaded.
+        **What you'll see:**
+        - **Prediction Score**: How well the entity matches the model's generated prototype
+        - **Confidence %**: The discriminator's estimate of edge validity
+        - **Evidence Paths**: Multi-hop reasoning explaining the prediction
+        - **Attention Neighbors**: Key entities the model focused on
+        
+        **⏱️ Timing**: First prediction may take 1-2 minutes as models download and load. Subsequent predictions are instant.
+        
+        **📖 Need details?** Click "How This Works" above to learn about the system architecture and metric meanings.
         """
     )
