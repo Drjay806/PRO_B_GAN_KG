@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import csv
 from pathlib import Path
 
 import numpy as np
@@ -62,26 +63,27 @@ def get_entity_type(entity_id: str) -> str:
 
 
 @st.cache_resource
-def load_eval_metrics():
-    """Load training evaluation metrics."""
-    try:
-        ensure_artifacts()
-        metrics_data = json.loads((ARTIFACT_DIR / "metrics.json").read_text())
-        return metrics_data.get("metrics", {})
-    except Exception:
-        return {}
-
-
-@st.cache_resource
 def load_entity_metadata():
-    """Load entity metadata and descriptions."""
+    """Load entity metadata from entity2text_ALL.final.tsv."""
+    metadata_index = {}
     try:
-        metadata_path = Path("all_metadata.json")
+        metadata_path = Path("entity2text_ALL.final.tsv")
         if metadata_path.exists():
-            return json.loads(metadata_path.read_text())
+            with metadata_path.open("r", encoding="utf-8", errors="ignore", newline="") as handle:
+                reader = csv.DictReader(handle, delimiter="\t")
+                for row in reader:
+                    node_id = (row.get("node_id") or "").strip()
+                    if not node_id:
+                        continue
+                    metadata_index[node_id] = {
+                        "display_name": (row.get("mapped_to") or "").strip() or node_id,
+                        "description": (row.get("text") or "").strip(),
+                        "source": (row.get("source") or "").strip(),
+                        "node_type": (row.get("node_type") or "").strip(),
+                    }
     except Exception:
         pass
-    return {}
+    return metadata_index
 
 
 @st.cache_resource
@@ -137,6 +139,11 @@ def load_model():
     id2rel = {v: k for k, v in rel2id.items()}
 
     neighbor_cache = NeighborCache.load(ARTIFACT_DIR / "neighbors_index.npy")
+    node_degree = {}
+    for (head_id, _rel_id), tails in neighbor_cache.pairs.items():
+        node_degree[head_id] = node_degree.get(head_id, 0) + len(tails)
+        for tail_id in tails:
+            node_degree[tail_id] = node_degree.get(tail_id, 0) + 1
 
     from pro_b_gan_kg.embeddings import RelationEmbedding
     relation_emb_mod = RelationEmbedding(len(rel2id), dim).to(device)
@@ -179,6 +186,7 @@ def load_model():
         "fusion": fusion,
         "retriever": retriever,
         "neighbor_cache": neighbor_cache,
+        "node_degree": node_degree,
         "entity2id": entity2id,
         "rel2id": rel2id,
         "id2entity": id2entity,
@@ -199,6 +207,7 @@ def predict_and_explain(artifacts, head_name, relation_name, topk=10, num_sample
     id2rel = artifacts["id2rel"]
     entity_emb = artifacts["entity_emb"]
     relation_emb = artifacts["relation_emb"]
+    node_degree = artifacts["node_degree"]
     device = artifacts["device"]
     noise_dim = artifacts["noise_dim"]
 
@@ -290,6 +299,7 @@ def predict_and_explain(artifacts, head_name, relation_name, topk=10, num_sample
             "prediction_score": round(avg_score, 4),
             "distmult_score": round(distmult_score, 4),
             "confidence": disc_pct,
+            "node_degree": int(node_degree.get(cand_id, 0)),
             "evidence": evidence if evidence else ["No path found (may be novel prediction)"],
             "attention_neighbors": attn_neighbors,
             "description": None,  # Can be populated from metadata if available
@@ -474,21 +484,15 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
             st.error(f"Prediction failed: {str(e)[:500]}")
             st.stop()
 
-    # Load evaluation metrics and entity metadata
-    eval_metrics = load_eval_metrics()
+    # Load entity metadata
     entity_metadata = load_entity_metadata()
     
     st.markdown(f"### Query: ({selected_entity_name}, {relation}, ?)")
     
-    # Display model evaluation metrics
-    if eval_metrics:
-        st.markdown("#### 📊 Model Evaluation Metrics")
-        cols = st.columns(4)
-        cols[0].metric("MRR", f"{eval_metrics.get('mrr', 0):.4f}")
-        cols[1].metric("HITS@1", f"{eval_metrics.get('hits@1', 0):.4f}")
-        cols[2].metric("HITS@3", f"{eval_metrics.get('hits@3', 0):.4f}")
-        cols[3].metric("HITS@10", f"{eval_metrics.get('hits@10', 0):.4f}")
-        st.divider()
+    with st.expander("ℹ️ Score Guide", expanded=False):
+        st.markdown("- **Prediction Score**: retrieval ranking score; higher is better (query-dependent, no strict upper bound).")
+        st.markdown("- **DistMult Score**: relation compatibility score; can be negative or positive; higher is better.")
+        st.markdown("- **Confidence**: discriminator probability in **0%–100%**.")
     
     # Filter results by target type from sidebar
     filtered_results = results
@@ -505,17 +509,22 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
     for r in filtered_results:
         conf_color = "#22c55e" if r["confidence"] > 90 else "#eab308" if r["confidence"] > 70 else "#ef4444"
         entity_type = r.get("entity_type", "Other")
+        meta = entity_metadata.get(r["entity_name"], {})
+        display_name = meta.get("display_name") or r["entity_name"]
+        description = meta.get("description") or ""
+        source = meta.get("source") or ""
+        metadata_type = meta.get("node_type") or entity_type
         
         # Create result card with name, ID, and type
         with st.expander(
-            f"**Rank {r['rank']}:** {r['entity_name']} (ID: {r['entity_id']}) [{entity_type}] — Confidence: {r['confidence']}%",
+            f"**Rank {r['rank']}:** {display_name} (Entity: {r['entity_name']}) [{metadata_type}] — Confidence: {r['confidence']}%",
             expanded=(r["rank"] <= 3),
         ):
             # Header with name, type, and confidence
             col1, col2 = st.columns([2, 1])
             with col1:
-                st.markdown(f"### {r['entity_name']}")
-                st.caption(f"Entity ID: `{r['entity_id']}` | Type: **{entity_type}**")
+                st.markdown(f"### {display_name}")
+                st.caption(f"Entity: `{r['entity_name']}` | Internal ID: `{r['entity_id']}` | Type: **{metadata_type}**")
             with col2:
                 st.markdown(
                     f"<div style='font-size:28px; font-weight:bold; color:{conf_color}; text-align:center;'>"
@@ -531,12 +540,15 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
             
             with tab1:
                 st.markdown("**Entity Information:**")
-                st.write(f"**Type:** {entity_type}")
-                st.write(f"**ID:** {r['entity_id']}")
-                if r.get("description"):
-                    st.write(f"**Description:** {r['description']}")
+                st.write(f"**Display Name:** {display_name}")
+                st.write(f"**Entity Key:** {r['entity_name']}")
+                st.write(f"**Internal ID:** {r['entity_id']}")
+                st.write(f"**Type:** {metadata_type}")
+                st.write(f"**Source:** {source if source else 'N/A'}")
+                if description:
+                    st.write(f"**Description:** {description}")
                 else:
-                    st.info("No description available for this entity")
+                    st.info("No description found in entity2text metadata")
             
             with tab2:
                 if r["evidence"]:
@@ -565,11 +577,13 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
                     st.metric("Confidence", f"{r['confidence']:.1f}%", help="Discriminator confidence")
                 
                 st.markdown("**Generation Details:**")
-                col_d, col_e = st.columns(2)
+                col_d, col_e, col_f = st.columns(3)
                 with col_d:
                     st.metric("Generation Samples", num_samples, help="Samples used to generate this prediction")
                 with col_e:
                     st.metric("Rank", r['rank'], help=f"Ranking among top-{topk} predictions")
+                with col_f:
+                    st.metric("Node Degree", r["node_degree"], help="Approximate graph degree from cached neighbors")
 
 
 
