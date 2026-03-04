@@ -11,7 +11,29 @@ from huggingface_hub import snapshot_download
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-st.set_page_config(page_title="PRO-B GAN KG", page_icon="🧬", layout="wide")
+st.set_page_config(
+    page_title="PRO-B GAN KG",
+    page_icon="🧬",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown(
+    """
+    <style>
+    [data-testid="collapsedControl"] button svg {
+        display: none;
+    }
+    [data-testid="collapsedControl"] button::before {
+        content: "☰";
+        font-size: 22px;
+        font-weight: 700;
+        line-height: 1;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # Human-readable entity mappings (name -> ID)
 ENTITY_NAME_MAPPING = {
