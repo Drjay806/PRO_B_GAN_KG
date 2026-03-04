@@ -281,12 +281,11 @@ st.sidebar.markdown("### Query Settings")
 
 @st.cache_resource
 def load_and_prepare_metadata():
-    """Load metadata and determine available relations per entity."""
+    """Load entity mappings and prepare dropdown data."""
     entity2id = {}
     rel2id = {}
     id2entity = {}
     id2rel = {}
-    available_relations_per_entity = {}
     
     try:
         ensure_artifacts()
@@ -298,76 +297,50 @@ def load_and_prepare_metadata():
         if (ARTIFACT_DIR / "rel2id.json").exists():
             rel2id = json.loads((ARTIFACT_DIR / "rel2id.json").read_text())
             id2rel = {v: k for k, v in rel2id.items()}
-        
-        # Load neighbor cache to find which relations each entity has
-        if (ARTIFACT_DIR / "neighbors_index.npy").exists():
-            try:
-                from pro_b_gan_kg.data import NeighborCache
-                neighbor_cache = NeighborCache.load(ARTIFACT_DIR / "neighbors_index.npy")
-                
-                # Build map of entity -> available relations
-                for (h_id, r_id) in neighbor_cache.pairs.keys():
-                    if h_id not in available_relations_per_entity:
-                        available_relations_per_entity[h_id] = set()
-                    available_relations_per_entity[h_id].add(r_id)
-            except Exception:
-                pass
     
     except Exception as e:
         st.sidebar.error(f"Error loading metadata: {e}")
     
-    return entity2id, rel2id, id2entity, id2rel, available_relations_per_entity
+    return entity2id, rel2id, id2entity, id2rel
 
 
 st.sidebar.markdown("### Query Settings")
 
 # Load all metadata
-entity2id, rel2id, id2entity, id2rel, available_relations_per_entity = load_and_prepare_metadata()
+entity2id, rel2id, id2entity, id2rel = load_and_prepare_metadata()
 
-# Get top 5 entities with most relations available
-entity_relation_counts = {}
-for h_id, relations in available_relations_per_entity.items():
-    if h_id in id2entity:
-        entity_relation_counts[h_id] = len(relations)
+# Get sample entities for dropdown (use actual entity names, not IDs)
+if entity2id:
+    sample_entities = sorted(list(entity2id.keys()))[:50]  # Take first 50 alphabetically for variety
+else:
+    sample_entities = []
 
-top_5_entity_ids = sorted(entity_relation_counts.items(), key=lambda x: -x[1])[:5]
-top_5_entities = [(id2entity[eid], eid) for eid, _ in top_5_entity_ids]
-
-# Display names and internal IDs
-entity_display_names = [name for name, _ in top_5_entities]
-
-# Entity dropdown
+# Entity dropdown - show names directly
 selected_entity_name = st.sidebar.selectbox(
     "Head Entity",
-    options=entity_display_names,
-    index=0 if entity_display_names else None,
-    key="entity_select"
-)
+    options=sample_entities,
+    index=0 if sample_entities else None,
+    key="entity_select",
+    help="Select from sample entities (showing actual names, not IDs)"
+) if sample_entities else None
 
 # Get the ID of selected entity
-selected_entity_id = None
-if selected_entity_name:
-    selected_entity_id = entity2id.get(selected_entity_name, None)
+selected_entity_id = entity2id.get(selected_entity_name) if selected_entity_name else None
 
-# Get available relations for this entity
-available_rels = []
-if selected_entity_id is not None and selected_entity_id in available_relations_per_entity:
-    available_rels = sorted([id2rel[r_id] for r_id in available_relations_per_entity[selected_entity_id] if r_id in id2rel])
-
-# Relation dropdown (filtered to available relations)
+# Relation dropdown
 relation = st.sidebar.selectbox(
     "Relation Type",
-    options=available_rels if available_rels else ["(none available)"],
-    index=0 if available_rels else None,
-    key="relation_select",
-    help="Only shows relations valid for the selected entity"
+    options=sorted(rel2id.keys()),
+    index=0 if rel2id else None,
+    key="relation_select"
 )
+
 
 topk = st.sidebar.slider("Top-K Results", 1, 20, 10)
 num_samples = st.sidebar.slider("Generator Samples", 1, 20, 10)
 
 if st.sidebar.button("🔍 Predict", use_container_width=True):
-    if selected_entity_name is None or relation == "(none available)":
+    if selected_entity_name is None or not relation:
         st.error("Please select both a head entity and relation.")
         st.stop()
 
@@ -453,7 +426,7 @@ if st.sidebar.button("🔍 Predict", use_container_width=True):
     st.markdown("---")
     st.markdown(
         "<div style='text-align:center; color:#94a3b8; font-size:13px;'>"
-        "PRO-B GAN KG — Vanderbilt University"
+        "PRO-B GAN KG"
         "</div>",
         unsafe_allow_html=True,
     )
